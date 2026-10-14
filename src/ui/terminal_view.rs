@@ -91,7 +91,7 @@ impl Layout {
         }
     }
 
-    fn cell_rect(&self, row: usize, col: usize, cells: usize) -> Rect {
+    pub fn cell_rect(&self, row: usize, col: usize, cells: usize) -> Rect {
         Rect::from_min_size(
             self.origin + vec2(col as f32 * self.cell.width, row as f32 * self.cell.height),
             vec2(cells as f32 * self.cell.width, self.cell.height),

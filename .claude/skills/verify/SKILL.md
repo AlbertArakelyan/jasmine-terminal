@@ -27,10 +27,19 @@ targets plus any WARN/ERROR/panic). Exit code 1 means the app died or never show
 Options:
 - `-Screenshot <path.png>` — captures the window (works with wgpu rendering). Save it in the
   scratchpad directory, then **Read the PNG** to check rendering yourself.
-- `-Keys "<SendKeys>"` — focuses the window and types, e.g. `-Keys "ls{ENTER}"`,
-  `-Keys "^c"` (Ctrl+C), `-Keys "%x"` (Alt+X). Run a VT test script with
-  `-Keys "bash .claude/skills/vt-tests/scripts/colors-256.sh{ENTER}"` once a shell runs (Step 4+).
-- `-Seconds N` — total run time; output settles before the screenshot is taken.
+- `-Keys "<SendKeys>"` — brings jterm to the front and types, e.g. `-Keys "ls{ENTER}"`,
+  `-Keys "^c"` (Ctrl+C), `-Keys "%x"` (Alt+X), `{UP}`, `{TAB}`, `{ESC}`. Separate groups with
+  `||` to type them `-KeyDelayMs` apart (default 800), e.g.
+  `-Keys "Start-Sleep 100{ENTER}||^c||echo done{ENTER}"`. `-StartDelayMs` waits before the
+  first group; use 3000 with the user's PowerShell profile, which takes 1–1.6 s to load.
+  - The script refuses to type (`FAIL: jterm isn't the foreground window`) unless jterm is in
+    front. SendKeys types into whatever window is focused, which could be one of the user's.
+  - SendKeys specials need braces: `{+}`, `{^}`, `{%}`, `{~}`, `{(}`, `{)}`, `{{}`, `{}}`.
+  - Typed commands go into the user's PSReadLine history.
+  - Example: an automated vim check is
+    `-Keys "nvim -u NONE '<scratch>/t.txt'{ENTER}||ihello{ESC}||hhx||{LEFT}x||:wq{ENTER}"`,
+    after which the file should contain `hlo`.
+- `-Seconds N` — total run time, including key delays; output settles before the screenshot is taken.
 
 Linux/macOS: `bash .claude/skills/verify/scripts/smoke.sh 4` (alive check and logs only).
 

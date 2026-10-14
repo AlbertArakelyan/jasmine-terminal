@@ -3,11 +3,16 @@
 #
 #   pwsh -NoProfile -File .claude/skills/verify/scripts/smoke.ps1 [-Seconds 4] [-Keys "ls{ENTER}"] [-Screenshot out.png]
 #
-# -Keys uses WScript.Shell SendKeys syntax ({ENTER}, ^c for Ctrl+C, %x for Alt+X).
+# -Keys uses WScript.Shell SendKeys syntax ({ENTER}, ^c for Ctrl+C, %x for Alt+X, {UP}, {TAB}).
+# Separate groups with "||" to type them -KeyDelayMs apart (pwsh -File can't pass arrays), e.g.
+#   -Keys "Start-Sleep 100{ENTER}||^c" -KeyDelayMs 1500
+# -StartDelayMs waits before the first group, e.g. for a slow shell profile to load.
 # Exit code 1 if the process exited early or no window appeared.
 param(
     [int]$Seconds = 4,
     [string]$Keys = "",
+    [int]$KeyDelayMs = 800,
+    [int]$StartDelayMs = 300,
     [string]$Screenshot = "",
     [string]$Exe = "target/debug/jterm.exe"
 )
@@ -19,6 +24,22 @@ Add-Type -Namespace Smoke -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool GetClientRect(System.IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h);
+[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, System.IntPtr pid);
+[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+[DllImport("user32.dll")] public static extern bool BringWindowToTop(System.IntPtr h);
+[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+// Windows only lets the foreground thread change the foreground window. Attaching to its
+// input queue for the call is the standard way for a test driver to bring a window forward.
+public static bool Focus(System.IntPtr h) {
+    var fg = GetForegroundWindow();
+    if (fg == h) return true;
+    uint me = GetCurrentThreadId(), them = GetWindowThreadProcessId(fg, System.IntPtr.Zero);
+    AttachThreadInput(me, them, true);
+    BringWindowToTop(h); SetForegroundWindow(h);
+    AttachThreadInput(me, them, false);
+    return GetForegroundWindow() == h;
+}
 [DllImport("user32.dll")] public static extern bool PrintWindow(System.IntPtr h, System.IntPtr hdc, uint flags);
 public struct RECT { public int L, T, R, B; }
 '@
@@ -42,10 +63,28 @@ try {
         $h = $p.MainWindowHandle
         Write-Output "window: title='$($p.MainWindowTitle)' client=$($c.R)x$($c.B)"
 
-        if ($Keys) {
-            [void][Smoke.Win]::SetForegroundWindow($h); Start-Sleep -Milliseconds 300
-            (New-Object -ComObject WScript.Shell).SendKeys($Keys)
-            Write-Output "sent keys: $Keys"
+        $groups = @($Keys -split [regex]::Escape("||") | Where-Object { $_ })
+        if ($groups.Count -gt 0) {
+            [void][Smoke.Win]::SetForegroundWindow($h); Start-Sleep -Milliseconds $StartDelayMs
+            $shell = New-Object -ComObject WScript.Shell
+            for ($i = 0; $i -lt $groups.Count; $i++) {
+                if ($i -gt 0) { Start-Sleep -Milliseconds $KeyDelayMs }
+                # SendKeys types into whatever window is in front. Never type unless that's
+                # jterm, or the keys could land in one of the user's own windows.
+                $front = $false
+                for ($try = 0; $try -lt 20 -and -not $front; $try++) {
+                    [void][Smoke.Win]::Focus($h)
+                    Start-Sleep -Milliseconds 50
+                    $front = [Smoke.Win]::GetForegroundWindow() -eq $h
+                }
+                if (-not $front) {
+                    Write-Output "FAIL: jterm isn't the foreground window; not sending: $($groups[$i])"
+                    $status = 1
+                    break
+                }
+                $shell.SendKeys($groups[$i])
+                Write-Output "sent keys: $($groups[$i])"
+            }
         }
         # Let the remaining time pass so output and repaints settle before capturing.
         $remaining = ($deadline - (Get-Date)).TotalMilliseconds

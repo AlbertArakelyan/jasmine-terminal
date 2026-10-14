@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::terminal::session::{TermSize, TerminalSession};
 use crate::ui::cell_metrics::{CellMetrics, GridSize};
 use crate::ui::fonts;
+use crate::ui::input_map::{Input, KeyboardState};
 use crate::ui::terminal_view::{Layout, TerminalView};
 
 /// Debug builds only: write `exit\r` to the shell this many milliseconds after it starts.
@@ -30,6 +31,7 @@ pub struct JtermApp {
     session: Option<TerminalSession>,
     spawn_error: Option<String>,
     view: TerminalView,
+    keyboard: KeyboardState,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -46,6 +48,8 @@ struct DebugExit {
 impl JtermApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         fonts::install(&cc.egui_ctx, &config.font);
+        // Ctrl+Plus/Minus/0 belong to the shell (Ctrl+- is 0x1f), not to egui's UI zoom.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         Self {
             config,
             metrics: None,
@@ -53,6 +57,7 @@ impl JtermApp {
             session: None,
             spawn_error: None,
             view: TerminalView::default(),
+            keyboard: KeyboardState::default(),
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -116,6 +121,43 @@ impl JtermApp {
                 // Shown in the window; not retried every frame.
                 error!("{e:#}");
                 self.spawn_error = Some(format!("{e:#}"));
+            }
+        }
+    }
+
+    /// Forwards keyboard input to the shell. The terminal widget keeps keyboard focus and
+    /// locks Tab, Escape and the arrows to itself, so egui doesn't use them to move focus.
+    fn handle_keyboard(&mut self, ctx: &egui::Context, response: &egui::Response) {
+        if !response.has_focus() {
+            response.request_focus();
+        }
+        ctx.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
+        let Some(session) = &self.session else {
+            return;
+        };
+        // Copy the events out first: `Term` must never be locked inside an egui closure.
+        let events = ctx.input(|i| i.events.clone());
+        if events.is_empty() {
+            return;
+        }
+        let modes = session.input_modes();
+        for event in &events {
+            // Keystrokes are only ever logged at trace level (SPEC §4.16).
+            tracing::trace!(?event, "input event");
+            match self.keyboard.feed(event, modes) {
+                Some(Input::Write(bytes)) => session.send_input(bytes),
+                Some(Input::Copy) => debug!("copy shortcut: selection arrives in Step 9"),
+                None => {}
             }
         }
     }
@@ -193,12 +235,13 @@ impl eframe::App for JtermApp {
             .frame(egui::Frame::NONE.fill(self.config.theme.background.into()))
             .show(ui, |ui| {
                 // The grid is sized from the exact rect the terminal is painted in.
-                let (rect, _response) =
-                    ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+                let (rect, response) =
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
                 let padding = self.config.window.padding;
                 let grid = metrics.grid_size(rect, padding);
                 self.update_grid(grid);
                 self.ensure_session(&ctx, grid, metrics);
+                self.handle_keyboard(&ctx, &response);
 
                 let painter = ui.painter_at(rect);
                 if let Some(session) = &self.session {
@@ -206,6 +249,21 @@ impl eframe::App for JtermApp {
                     let layout =
                         Layout::new(&ctx, rect, padding, metrics, self.config.font.size, focused);
                     self.view.paint(&painter, rect, layout, &snapshot);
+                    // egui-winit only enables the OS IME while this is set, and places the
+                    // composition window at the cursor.
+                    if response.has_focus() {
+                        let cursor = snapshot
+                            .cursor
+                            .map_or(rect, |c| layout.cell_rect(c.row, c.col, 1));
+                        ctx.output_mut(|o| {
+                            o.ime = Some(egui::output::IMEOutput {
+                                purpose: egui::IMEPurpose::Terminal,
+                                rect,
+                                cursor_rect: cursor,
+                                should_interrupt_composition: false,
+                            });
+                        });
+                    }
                 } else if let Some(error) = &self.spawn_error {
                     painter.text(
                         rect.min + egui::vec2(padding, padding),

@@ -2,5 +2,5 @@
 
 pub mod cell_metrics;
 pub mod fonts;
-mod input_map;
+pub mod input_map;
 pub mod terminal_view;

@@ -10,8 +10,9 @@ use std::thread::JoinHandle;
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::event_loop::{self, EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{self, Term};
+use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::tty;
 use anyhow::Context as _;
 use tracing::{info, warn};
@@ -20,6 +21,7 @@ use super::event_proxy::EventProxy;
 use super::snapshot::{Palette, RenderSnapshot};
 use crate::config::theme::Theme;
 use crate::config::{Config, ShellConfig};
+use crate::ui::input_map::InputModes;
 
 /// Grid size handed to `alacritty_terminal`, which takes it through the `Dimensions` trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,8 @@ impl TerminalSession {
         };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));
 
+        #[cfg(windows)]
+        enable_ctrl_c_for_children();
         let pty =
             tty::new(&options, size.into(), 0).context("failed to start the shell in a PTY")?;
         // drain_on_exit: read the shell's last output before reporting `Exit`.
@@ -120,6 +124,27 @@ impl TerminalSession {
     pub fn color(&self, index: usize, theme: &Theme) -> egui::Color32 {
         let term = self.term.lock();
         Palette::new(theme, term.colors()).get(index)
+    }
+
+    /// Terminal modes that change what keys send.
+    pub fn input_modes(&self) -> InputModes {
+        let mode = *self.term.lock().mode();
+        InputModes {
+            app_cursor: mode.contains(TermMode::APP_CURSOR),
+            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+        }
+    }
+
+    /// Sends user input to the shell. Like other terminals, typing jumps back to the
+    /// bottom if the view was scrolled into history.
+    pub fn send_input(&self, bytes: Vec<u8>) {
+        {
+            let mut term = self.term.lock();
+            if term.grid().display_offset() != 0 {
+                term.scroll_display(Scroll::Bottom);
+            }
+        }
+        self.write(bytes);
     }
 
     /// Queues bytes for the PTY. Never blocks; the I/O thread does the write.
@@ -193,6 +218,27 @@ fn resolve_shell(
         warn!("shell.args is ignored unless shell.program is set");
     }
     None
+}
+
+/// Windows children inherit their parent's "ignore Ctrl+C" flag. When jterm is started
+/// from a process that set it (a shell, cargo, an IDE), the shell would inherit it too, and
+/// the ^C that ConPTY turns into CTRL_C_EVENT would be ignored: Ctrl+C couldn't stop
+/// anything. Clearing the flag on ourselves before spawning restores normal behaviour.
+/// It's process-wide state, so it's done once, on the first spawn.
+#[cfg(windows)]
+fn enable_ctrl_c_for_children() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: a null handler with FALSE only clears this process's ignore-Ctrl+C flag;
+        // no pointers are passed.
+        let ok = unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
+        if ok == 0 {
+            warn!(
+                "SetConsoleCtrlHandler failed: {}; Ctrl+C may not interrupt programs",
+                std::io::Error::last_os_error()
+            );
+        }
+    });
 }
 
 fn find_on_path(program: &str) -> bool {
@@ -283,5 +329,38 @@ mod tests {
         }
         assert!(woke, "no Wakeup event: the shell produced no output");
         assert!(session.exited, "shell did not exit after `exit\\r`");
+    }
+
+    /// SPEC Step 6: Ctrl+C (0x03) must interrupt a running program. On Windows this
+    /// depends on `enable_ctrl_c_for_children`; on Unix on the PTY line discipline.
+    #[test]
+    fn ctrl_c_interrupts_a_running_program() {
+        let (program, args) = if cfg!(windows) {
+            ("cmd.exe", ["/c", "ping -n 30 127.0.0.1"])
+        } else {
+            ("/bin/sh", ["-c", "sleep 30"])
+        };
+        let config = Config {
+            shell: shell(Some(program), &args),
+            ..Config::default()
+        };
+        let size = TermSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut session =
+            TerminalSession::spawn(&config, size, egui::Context::default()).expect("spawn");
+        // Let the program start; a ^C before it runs would hit the shell instead.
+        std::thread::sleep(Duration::from_millis(1500));
+        session.write(&b"\x03"[..]);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.exited && Instant::now() < deadline {
+            session.poll_events();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.exited, "^C did not stop the program");
     }
 }
