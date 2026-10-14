@@ -4,12 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-MVP Steps 1–3 are done: the SPEC §3.3 module layout exists, config loading works, the bundled font is registered, and cell metrics and the grid size are computed. `cargo run` opens an empty 1000×650 window filled with the theme background and logs the cell size and grid size (8×18pt cells, 123×35 grid at the defaults). Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Steps 1–4 are done: the SPEC §3.3 module layout exists, config loading works, the bundled font is registered, cell metrics and the grid size are computed, and the shell runs in a PTY. `cargo run` opens a 1000×650 window filled with the theme background (nothing is drawn yet) and starts the shell. The log shows the cell and grid size (8×18pt cells, 123×35 grid at the defaults), the shell spawn and its first output. The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
 - Dependencies are on their latest releases: `egui`/`eframe` 0.36 and `alacritty_terminal` 0.26. eframe 0.36 needs Rust 1.95 or newer, so `Cargo.toml` sets `rust-version = "1.95"`. eframe uses `App::ui(&mut self, ui, frame)`, not the older `update(ctx, frame)`.
 - Development happens on Windows, but the spec targets Linux first, then macOS, and treats Windows (ConPTY) as a v1 non-goal. Keep code portable. Flag any PTY or platform behaviour that can't be checked on this machine instead of assuming it works.
+- **Shell choice (decided with the user, deviates from SPEC §4.1):**
+  - `shell.program` always wins when set.
+  - Windows default: `pwsh.exe` if it's on `PATH`, otherwise `powershell.exe`. Set `shell.program` to Git Bash to run the bash VT test scripts.
+  - Unix with no `shell.program`: we pass `shell: None`, and `alacritty_terminal` uses `$SHELL`, falling back to the passwd entry, started as a login shell (via `login` on macOS). That's instead of the SPEC's `/bin/bash` fallback. `shell.args` is ignored in this case.
 
 ## Workflow rules from SPEC.md
 
@@ -33,7 +37,7 @@ cargo build --release
 
 A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt check + clippy with `--all-targets`), `just test`, `just run`. `just` is not installed on this machine yet (`scoop install just`), so run the cargo commands directly until it is. Debug builds log to stderr; set `RUST_LOG` to change the level (default `info,wgpu_hal=error`).
 
-## Architecture (per SPEC §3; terminal parts not built yet)
+## Architecture (per SPEC §3; rendering and input not built yet)
 
 - **Two threads.** The eframe UI thread and alacritty's PTY I/O `EventLoop` thread share `Arc<FairMutex<Term<EventProxy>>>`.
 - **`EventProxy`** implements alacritty's `EventListener`. It forwards events (Wakeup, Title, Bell, Exit, ClipboardStore, PtyWrite) over a channel to the app and calls `ctx.request_repaint()`.
@@ -44,6 +48,17 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
 - **Config** (`config/`) is TOML at the `directories` config path: `~/.config/jterm/config.toml` on Linux, `%APPDATA%\jterm\config\config.toml` on Windows. A missing file is created with commented defaults. Every section and key is optional, and missing ones take their defaults (`#[serde(default)]`). Unknown keys are only warnings (reported via `serde_ignored`). A malformed file or invalid value logs an error and the whole config falls back to defaults, without overwriting the file. `Config::load()` never fails. Colors are `"#rrggbb"` strings (`theme::Rgb`). The normal and bright ANSI sets are separate types, so each fills in its own defaults.
 - **Fonts** (`ui/fonts.rs`): JetBrains Mono (OFL, `assets/fonts/`) is embedded with `include_bytes!` and installed as egui's `Monospace` family. Bold, italic and bold-italic are registered as named families (`fonts::BOLD_FAMILY` etc.), because egui has no font weights or styles. `font.path` replaces only the regular face. Fonts can't be looked up by family name.
 - **Cell metrics** (`ui/cell_metrics.rs`): cell width is the advance of `M`, height is egui's `row_height`, both snapped to whole physical pixels so glyphs stay on the pixel grid. egui has no fonts before the first frame, so `JtermApp` measures lazily in `ui()` and re-measures when `pixels_per_point` changes. `grid_size(rect, padding)` floors with a small epsilon and is clamped to at least 1×1. Headless tests can measure with a real `egui::Context` (see `measure_headless`); they must call `textures_delta.clear()` on the output or egui's debug assert panics.
+- **Session** (`terminal/session.rs`):
+  - `TerminalSession::spawn` runs on the first frame, once the grid size is known.
+  - `TERM`, `COLORTERM` and `TERM_PROGRAM` go through `tty::Options.env`, never `std::env::set_var`.
+  - The working directory is the home dir. `drain_on_exit` is on.
+  - When the shell exits, `alacritty_terminal` sends `ChildExit(status)`, drains the last output, then sends `Exit`. `session.exited` is set on `Exit`, so the final output isn't lost, or when the I/O thread has finished, because a PTY read or write error stops it without sending `Exit`. The app then sends `ViewportCommand::Close` once.
+  - `EventProxy` writes `PtyWrite` replies (DA, DSR/cursor position, DECRQM) straight to the PTY from the I/O thread; they never reach the UI. fish, vim and crossterm apps hang without them. It also coalesces `Wakeup`s to one queued at a time; `poll_events` clears the flag. Not answered yet: `ColorRequest` (Step 5, from the theme) and `TextAreaSizeRequest` (Step 7). `ClipboardLoad` is ignored on purpose (SPEC §4.16).
+  - **Lock order:** `EventProxy` takes egui's context lock while the PTY thread may hold the `Term` lock. Never lock `Term` inside an egui context closure (`ctx.input(|i| ..)`, `ui.input(..)`, `ctx.fonts(..)`, `ctx.memory(..)`), or the threads can deadlock.
+  - Dropping the session sends `Msg::Shutdown`. Closing the window also ends the shell and its conhost processes, as verified on Windows.
+  - A spawn failure is logged and not retried.
+- **`JTERM_DEBUG_EXIT_AFTER_MS=N`** (debug builds only) writes `exit\r` to the shell N ms after it spawns, to test the exit path without keyboard input: `JTERM_DEBUG_EXIT_AFTER_MS=1500 pwsh -NoProfile -File .claude/skills/verify/scripts/smoke.ps1 -Seconds 6`. The smoke script then reports `FAIL: process exited`, which is expected here.
+- Logging: the first `Wakeup` is logged at info and later (coalesced) ones at debug (`RUST_LOG=jterm=debug`). Window titles and other terminal content are only logged at debug.
 - **For Step 5 (from the Step 3 review):**
   - The snapped `width` differs from the font's real `advance` (8.0 vs 8.4pt at 14pt), and egui lays out galleys with `advance`. When a run of cells is painted as one galley, set `TextFormat::extra_letter_spacing = width - advance`, or text drifts off its cells, cursor and selection. Add a test that an N-char galley is about `N * width` wide.
   - Snap the grid origin (`rect.min + padding`) to physical pixels too, e.g. `ctx.round_pos_to_pixels`.
