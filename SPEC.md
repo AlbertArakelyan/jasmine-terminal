@@ -123,6 +123,7 @@ jterm/
    │  ├─ mod.rs
    │  ├─ terminal_view.rs    # Renders snapshot, handles input/mouse/selection/scroll
    │  ├─ cell_metrics.rs     # Font metrics: cell width/height, baseline
+   │  ├─ fonts.rs            # Registers bundled/user fonts with egui (regular + named bold/italic families)
    │  └─ input_map.rs        # egui key events -> bytes/escape sequences
    ├─ blocks/                # post-MVP (Phase 1)
    ├─ editor/                # post-MVP (Phase 2)

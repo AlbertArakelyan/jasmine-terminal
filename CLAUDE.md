@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-MVP Step 1 (scaffold) is done: the module layout from SPEC §3.3 exists with empty modules, and `cargo run` opens an empty 1000×650 window. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Steps 1–2 are done: the SPEC §3.3 module layout exists, config loading works, and the bundled font is registered. `cargo run` opens an empty 1000×650 window filled with the theme background. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
@@ -33,7 +33,7 @@ cargo build --release
 
 A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt check + clippy with `--all-targets`), `just test`, `just run`. `just` is not installed on this machine yet (`scoop install just`), so run the cargo commands directly until it is. Debug builds log to stderr; set `RUST_LOG` to change the level (default `info,wgpu_hal=error`).
 
-## Architecture (target, per SPEC §3)
+## Architecture (per SPEC §3; terminal parts not built yet)
 
 - **Two threads.** The eframe UI thread and alacritty's PTY I/O `EventLoop` thread share `Arc<FairMutex<Term<EventProxy>>>`.
 - **`EventProxy`** implements alacritty's `EventListener`. It forwards events (Wakeup, Title, Bell, Exit, ClipboardStore, PtyWrite) over a channel to the app and calls `ctx.request_repaint()`.
@@ -41,7 +41,8 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
 - **Painting** batches runs of identically styled cells. Never create one galley per cell. Wide characters span 2 cells, and the spacer cell is skipped.
 - **Repaint only on events** (PTY wakeup, input, cursor-blink timer via `request_repaint_after`). No continuous repaint loop; idle CPU should be about 0%.
 - **Input** (`ui/input_map.rs`) maps egui events to bytes and must respect `TermMode` (DECCKM application cursor mode, bracketed paste, mouse reporting; Shift overrides mouse reporting for local selection).
-- Config is TOML at the `directories` config path (`~/.config/jterm/config.toml`). It is written with defaults if missing. Unknown keys log a warning, and a malformed file falls back to defaults.
+- **Config** (`config/`) is TOML at the `directories` config path: `~/.config/jterm/config.toml` on Linux, `%APPDATA%jtermnfignfig.toml` on Windows. A missing file is created with commented defaults. Every section and key is optional, and missing ones take their defaults (`#[serde(default)]`). Unknown keys are only warnings (reported via `serde_ignored`). A malformed file or invalid value logs an error and the whole config falls back to defaults, without overwriting the file. `Config::load()` never fails. Colors are `"#rrggbb"` strings (`theme::Rgb`). The normal and bright ANSI sets are separate types, so each fills in its own defaults.
+- **Fonts** (`ui/fonts.rs`): JetBrains Mono (OFL, `assets/fonts/`) is embedded with `include_bytes!` and installed as egui's `Monospace` family. Bold, italic and bold-italic are registered as named families (`fonts::BOLD_FAMILY` etc.), because egui has no font weights or styles. `font.path` replaces only the regular face. Fonts can't be looked up by family name.
 
 ## Conventions (SPEC §8)
 

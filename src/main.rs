@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 fn main() -> anyhow::Result<()> {
     init_logging();
+    let config = config::Config::load();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -22,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "jterm",
         options,
-        Box::new(|cc| Ok(Box::new(app::JtermApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::JtermApp::new(cc, config)))),
     )
     .map_err(|e| anyhow::anyhow!("failed to run the window: {e}"))
 }
