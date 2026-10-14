@@ -33,8 +33,12 @@ impl From<TermMode> for InputModes {
 pub enum Input {
     /// Bytes for the PTY.
     Write(Vec<u8>),
-    /// The copy shortcut (Ctrl+Shift+C, or Cmd+C on macOS). Copies the selection (Step 9).
+    /// The copy shortcut (Ctrl+Shift+C, or Cmd+C on macOS): copy the selection.
     Copy,
+    /// Ctrl+C on Windows: copy when there is a selection, otherwise send ^C. That's what
+    /// Windows Terminal does, and what Windows users expect from Ctrl+C. Only the app
+    /// knows whether something is selected.
+    CopyOrInterrupt,
 }
 
 /// Tracks the modifier state through the event stream, across frames.
@@ -67,6 +71,7 @@ fn translate(event: &Event, mods: Modifiers, modes: InputModes) -> Option<Input>
         Event::Text(text) => write(with_alt(mods, text.as_bytes())),
         Event::Ime(ImeEvent::Commit(text)) => write(text.clone().into_bytes()),
         Event::Copy if mac || mods.shift => Some(Input::Copy),
+        Event::Copy if cfg!(windows) => Some(Input::CopyOrInterrupt),
         Event::Copy => write(vec![0x03]),
         Event::Cut if mac => None,
         // Ctrl+X is ^X; on Windows Shift+Delete also arrives as Cut.
@@ -224,7 +229,7 @@ mod tests {
     fn bytes(event: &Event, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>> {
         match translate(event, mods, modes)? {
             Input::Write(b) => Some(b),
-            Input::Copy => None,
+            Input::Copy | Input::CopyOrInterrupt => None,
         }
     }
 
@@ -367,11 +372,13 @@ mod tests {
             shift: true,
             ..NONE
         };
-        // Ctrl+C interrupts; Ctrl+Shift+C copies.
-        assert_eq!(
-            translate(&Event::Copy, CTRL, m),
-            Some(Input::Write(vec![0x03]))
-        );
+        // Ctrl+C interrupts (on Windows: copies if something is selected); Ctrl+Shift+C copies.
+        let ctrl_c = if cfg!(windows) {
+            Input::CopyOrInterrupt
+        } else {
+            Input::Write(vec![0x03])
+        };
+        assert_eq!(translate(&Event::Copy, CTRL, m), Some(ctrl_c));
         assert_eq!(translate(&Event::Copy, ctrl_shift, m), Some(Input::Copy));
         assert_eq!(bytes(&Event::Cut, CTRL, m), Some(vec![0x18]));
         assert_eq!(
@@ -406,6 +413,7 @@ mod tests {
             b"\x1b[200~x[201~rm -rf ~\x1b[201~"
         );
     }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn modifiers_follow_the_event_stream() {
@@ -414,6 +422,8 @@ mod tests {
         let mut feed = |e: Event| match kb.feed(&e, m) {
             Some(Input::Write(b)) => Some(b),
             Some(Input::Copy) => Some(b"<copy>".to_vec()),
+            // Without a selection this is ^C, which is what the app then sends.
+            Some(Input::CopyOrInterrupt) => Some(vec![0x03]),
             None => None,
         };
         // "x" then Ctrl+V in one frame: the paste must see Ctrl, so it's ^V, not a paste.

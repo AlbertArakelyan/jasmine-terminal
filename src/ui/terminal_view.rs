@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use alacritty_terminal::index::Side;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::emath::GuiRounding;
 use egui::text::{LayoutJob, TextFormat};
@@ -102,6 +103,21 @@ impl Layout {
             clamp(rel.x, self.cell.width, cols),
             clamp(rel.y, self.cell.height, rows),
         )
+    }
+
+    /// The cell under `pos` and which half of it the pointer is on. Selections start and
+    /// end on cell halves, so clicking the right half of a character doesn't include it.
+    /// Positions left of the grid count as the left half of column 0, right of it as the
+    /// right half of the last column.
+    pub fn hit(&self, pos: Pos2, cols: usize, rows: usize) -> ((usize, usize), Side) {
+        let (col, row) = self.cell_at(pos, cols, rows);
+        let center = self.cell_rect(row, col, 1).center().x;
+        let side = if pos.x < center {
+            Side::Left
+        } else {
+            Side::Right
+        };
+        ((col, row), side)
     }
 
     pub fn cell_rect(&self, row: usize, col: usize, cells: usize) -> Rect {

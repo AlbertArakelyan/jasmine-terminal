@@ -75,15 +75,33 @@ impl RenderSnapshot {
         let cols = term.columns();
         let rows = term.screen_lines();
         let offset = content.display_offset as i32;
+        let selection = content.selection;
+        let selection_bg = rgb(theme.selection);
 
         let mut cells = vec![RenderCell::blank(palette.background()); rows * cols];
+        let mut selected = vec![false; rows * cols];
         for indexed in content.display_iter {
             let row = indexed.point.line.0 + offset;
             let col = indexed.point.column.0;
             if row < 0 || row as usize >= rows || col >= cols {
                 continue;
             }
-            cells[row as usize * cols + col] = palette.cell(indexed.cell);
+            let i = row as usize * cols + col;
+            cells[i] = palette.cell(indexed.cell);
+            // The range is in grid coordinates, the same as `indexed.point`.
+            selected[i] = selection.is_some_and(|s| s.contains(indexed.point));
+        }
+        // A wide character and its spacer are one glyph: if either half is selected (a drag
+        // can start on either half, and copying includes the whole character), highlight both.
+        for i in 0..cells.len() {
+            let pair = cells[i].wide && (i + 1) % cols != 0;
+            if pair && (selected[i] || selected[i + 1]) {
+                selected[i] = true;
+                selected[i + 1] = true;
+            }
+        }
+        for (cell, _) in cells.iter_mut().zip(&selected).filter(|(_, s)| **s) {
+            cell.bg = selection_bg;
         }
 
         let cursor_row = content.cursor.point.line.0 + offset;
@@ -419,5 +437,70 @@ mod tests {
             after.cursor.is_none(),
             "the cursor is below the visible area"
         );
+    }
+    #[test]
+    fn selection_is_highlighted_and_copied() {
+        use alacritty_terminal::index::{Column, Direction, Line, Point};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+
+        let theme = Theme::default();
+        let mut term = term_with(b"hello world");
+        let at = |col| Point::new(Line(0), Column(col));
+        let mut selection = Selection::new(SelectionType::Simple, at(0), Direction::Left);
+        selection.update(at(4), Direction::Right);
+        term.selection = Some(selection);
+
+        let s = RenderSnapshot::capture(&term, &theme);
+        let row = s.row(0);
+        assert!(row[..5].iter().all(|c| c.bg == rgb(theme.selection)));
+        assert_ne!(row[5].bg, rgb(theme.selection));
+        assert_eq!(term.selection_to_string().as_deref(), Some("hello"));
+
+        // Double-click semantics: the whole word under the point.
+        term.selection = Some(Selection::new(
+            SelectionType::Semantic,
+            at(8),
+            Direction::Left,
+        ));
+        assert_eq!(term.selection_to_string().as_deref(), Some("world"));
+    }
+    #[test]
+    fn wide_chars_are_highlighted_whole() {
+        use alacritty_terminal::index::{Column, Direction, Line, Point};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+
+        let theme = Theme::default();
+        let sel = rgb(theme.selection);
+        let mut term = term_with("ab日cd".as_bytes());
+        // Select only the spacer half of 日 (column 3).
+        let at = Point::new(Line(0), Column(3));
+        let mut selection = Selection::new(SelectionType::Simple, at, Direction::Left);
+        selection.update(at, Direction::Right);
+        term.selection = Some(selection);
+
+        let s = RenderSnapshot::capture(&term, &theme);
+        let row = s.row(0);
+        assert!(row[2].wide && row[3].spacer);
+        assert_eq!((row[2].bg, row[3].bg), (sel, sel), "both halves");
+        assert_ne!(row[1].bg, sel);
+        assert_ne!(row[4].bg, sel);
+    }
+
+    #[test]
+    fn selection_while_scrolled_targets_history() {
+        use alacritty_terminal::grid::Scroll;
+        use alacritty_terminal::index::{Column, Direction, Line, Point};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+
+        let lines: String = (1..=20).map(|i| format!("line {i}\r\n")).collect();
+        let mut term = term_with(lines.as_bytes());
+        term.scroll_display(Scroll::Delta(5));
+        // Visible row 0 while scrolled up 5 is grid line 0 - 5, as `viewport_to_grid` maps it.
+        let offset = term.grid().display_offset() as i32;
+        let start = Point::new(Line(0 - offset), Column(0));
+        term.selection = Some(Selection::new(SelectionType::Lines, start, Direction::Left));
+        let top = screen_text(&RenderSnapshot::capture(&term, &Theme::default()))[0].clone();
+        assert_eq!(top, "line 13");
+        assert_eq!(term.selection_to_string().as_deref(), Some("line 13\n"));
     }
 }

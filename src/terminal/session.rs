@@ -11,6 +11,8 @@ use alacritty_terminal::event::{Event, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{self, EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::tty;
@@ -145,6 +147,35 @@ impl TerminalSession {
         self.size = size;
     }
 
+    /// Starts a selection at the visible cell `(col, row)`. Selections live in `Term`, in
+    /// grid coordinates, so they stay on the same text while output scrolls it.
+    pub fn start_selection(&self, ty: SelectionType, (col, row): (usize, usize), side: Side) {
+        let mut term = self.term.lock();
+        let point = viewport_to_grid(&term, col, row);
+        term.selection = Some(Selection::new(ty, point, side));
+    }
+
+    /// Extends the current selection to the visible cell `(col, row)`.
+    pub fn update_selection(&self, (col, row): (usize, usize), side: Side) {
+        let mut term = self.term.lock();
+        let point = viewport_to_grid(&term, col, row);
+        if let Some(selection) = &mut term.selection {
+            selection.update(point, side);
+        }
+    }
+
+    pub fn clear_selection(&self) {
+        self.term.lock().selection = None;
+    }
+
+    /// The selected text, or `None` when nothing (or only an empty range) is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term
+            .lock()
+            .selection_to_string()
+            .filter(|s| !s.is_empty())
+    }
+
     /// The terminal's current modes (mouse reporting, alternate screen, ...).
     pub fn mode(&self) -> TermMode {
         *self.term.lock().mode()
@@ -158,13 +189,15 @@ impl TerminalSession {
     }
 
     /// Sends user input to the shell. Like other terminals, typing jumps back to the
-    /// bottom if the view was scrolled into history.
+    /// bottom if the view was scrolled into history, and clears the selection.
     pub fn send_input(&self, bytes: Vec<u8>) {
         {
             let mut term = self.term.lock();
             if term.grid().display_offset() != 0 {
                 term.scroll_display(Scroll::Bottom);
             }
+            // Typing replaces the selection highlight, as in other terminals.
+            term.selection = None;
         }
         self.write(bytes);
     }
@@ -196,6 +229,14 @@ impl Drop for TerminalSession {
         // Stop the PTY thread; the error case means it has already stopped.
         let _ = self.notifier.0.send(Msg::Shutdown);
     }
+}
+
+/// Visible row `row` is grid line `row - display_offset`: line 0 is the top of the live
+/// screen, and history lines are negative.
+fn viewport_to_grid<T>(term: &Term<T>, col: usize, row: usize) -> Point {
+    let offset = term.grid().display_offset() as i32;
+    let last_col = term.columns().saturating_sub(1);
+    Point::new(Line(row as i32 - offset), Column(col.min(last_col)))
 }
 
 /// PTY options from config plus the environment SPEC §4.1 requires. The variables go
@@ -441,5 +482,36 @@ mod tests {
             "shell didn't report the new size {expected:?}; screen:\n{}",
             screen.trim()
         );
+    }
+    #[test]
+    fn viewport_rows_map_to_history_lines_when_scrolled() {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::grid::Scroll;
+        use alacritty_terminal::vte::ansi::Processor;
+
+        let mut term = Term::new(
+            term::Config::default(),
+            &TermSize {
+                cols: 10,
+                rows: 4,
+                cell_width: 8,
+                cell_height: 16,
+            },
+            VoidListener,
+        );
+        let lines: String = (1..=20).map(|i| format!("{i}\r\n")).collect();
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new()
+            .advance(&mut term, lines.as_bytes());
+        assert_eq!(
+            viewport_to_grid(&term, 2, 1),
+            Point::new(Line(1), Column(2))
+        );
+        term.scroll_display(Scroll::Delta(5));
+        assert_eq!(
+            viewport_to_grid(&term, 2, 1),
+            Point::new(Line(-4), Column(2))
+        );
+        // Columns past the grid clamp to the last one.
+        assert_eq!(viewport_to_grid(&term, 99, 0).column, Column(9));
     }
 }

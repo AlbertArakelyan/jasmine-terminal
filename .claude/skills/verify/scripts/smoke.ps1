@@ -81,6 +81,29 @@ try {
                     Write-Output "resized: client=$($r.R)x$($r.B)"
                     continue
                 }
+                # Mouse in grid cells (0-based col,row), posted as window messages so the user's
+                # real mouse isn't moved: "<click c,r>", "<dclick c,r>", "<drag c1,r1 c2,r2>".
+                if ($groups[$i] -match '^<(click|dclick|drag) (\d+),(\d+)(?: (\d+),(\d+))?>$') {
+                    # Default 14pt JetBrains Mono at 100%: 8x18 cells, 8pt padding.
+                    $px = { param($c, $r) [IntPtr]((([int](8 + $r * 18 + 9)) -shl 16) -bor ([int](8 + $c * 8 + 2))) }
+                    $from = & $px ([int]$Matches[2]) ([int]$Matches[3])
+                    # Every button message is preceded by a move to the same spot, posted back to back:
+                    # the real cursor is elsewhere, so Windows soon reports the pointer leaving, and egui
+                    # ignores buttons while it thinks the pointer is outside the window.
+                    $post = { param($msg, $w, $l) [void][Smoke.Win]::PostMessage($h, 0x0200, [IntPtr]($w -band 1), $l); [void][Smoke.Win]::PostMessage($h, $msg, [IntPtr]$w, $l); Start-Sleep -Milliseconds 40 }
+                    & $post 0x0200 0 $from   # WM_MOUSEMOVE
+                    switch ($Matches[1]) {
+                        'click'  { & $post 0x0201 1 $from; & $post 0x0202 0 $from }
+                        'dclick' { & $post 0x0201 1 $from; & $post 0x0202 0 $from; & $post 0x0201 1 $from; & $post 0x0202 0 $from }
+                        'drag'   {
+                            # End on the right half of the last cell so it's included.
+                            $to = [IntPtr]((([int](8 + [int]$Matches[5] * 18 + 9)) -shl 16) -bor ([int](8 + [int]$Matches[4] * 8 + 6)))
+                            & $post 0x0201 1 $from; & $post 0x0200 1 $to; & $post 0x0202 0 $to
+                        }
+                    }
+                    Write-Output "mouse: $($groups[$i])"
+                    continue
+                }
                 if ($groups[$i] -match '^<wheel ([+-]?\d+)( shift)?>$') {
                     $notches = [int]$Matches[1]
                     $keys = if ($Matches[2]) { 0x4 } else { 0 }   # MK_SHIFT
@@ -96,6 +119,8 @@ try {
                     $step = if ($notches -gt 0) { 120 } else { -120 }   # WHEEL_DELTA per notch
                     for ($n = 0; $n -lt [Math]::Abs($notches); $n++) {
                         $wparam = [IntPtr]((($step -band 0xFFFF) -shl 16) -bor $keys)
+                        # Re-post the move right before each notch: see the note on mouse buttons below.
+                        [void][Smoke.Win]::PostMessage($h, 0x0200, [IntPtr]::Zero, $move)
                         [void][Smoke.Win]::PostMessage($h, 0x020A, $wparam, $lparam)   # WM_MOUSEWHEEL
                         Start-Sleep -Milliseconds 30
                     }

@@ -15,7 +15,7 @@ use crate::terminal::session::{TermSize, TerminalSession};
 use crate::ui::cell_metrics::{CellMetrics, GridSize};
 use crate::ui::fonts;
 use crate::ui::input_map::{Input, InputModes, KeyboardState};
-use crate::ui::mouse::{self, WheelAccumulator, WheelAction};
+use crate::ui::mouse::{self, PointerAction, PointerState, WheelAccumulator, WheelAction};
 use crate::ui::terminal_view::{Layout, TerminalView};
 
 /// Debug builds only: write `exit\r` to the shell this many milliseconds after it starts.
@@ -36,6 +36,7 @@ pub struct JtermApp {
     view: TerminalView,
     keyboard: KeyboardState,
     wheel: WheelAccumulator,
+    pointer: PointerState,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -63,6 +64,7 @@ impl JtermApp {
             view: TerminalView::default(),
             keyboard: KeyboardState::default(),
             wheel: WheelAccumulator::default(),
+            pointer: PointerState::default(),
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -137,7 +139,7 @@ impl JtermApp {
         }
     }
 
-    /// Forwards keyboard and wheel input. The terminal widget keeps keyboard focus and
+    /// Forwards keyboard, wheel and pointer input. The terminal widget keeps keyboard focus and
     /// locks Tab, Escape and the arrows to itself, so egui doesn't use them to move focus.
     fn handle_input(&mut self, ctx: &egui::Context, response: &egui::Response, layout: &Layout) {
         if !response.has_focus() {
@@ -187,7 +189,14 @@ impl JtermApp {
                     let action = mouse::wheel_action(lines, mode, *modifiers, cell, rows);
                     tracing::trace!(lines, ?cell, ?mode, ?action, "wheel");
                     match action {
-                        Some(WheelAction::Scroll(n)) => session.scroll(Scroll::Delta(n)),
+                        Some(WheelAction::Scroll(n)) => {
+                            session.scroll(Scroll::Delta(n));
+                            // Keep extending a drag selection as the view scrolls under it.
+                            if let Some(p) = pointer.filter(|_| self.pointer.is_selecting()) {
+                                let (cell, side) = layout.hit(p, cols, rows);
+                                session.update_selection(cell, side);
+                            }
+                        }
                         Some(WheelAction::Write(bytes)) => session.write(bytes),
                         None => {}
                     }
@@ -214,9 +223,40 @@ impl JtermApp {
                 }
                 _ => {}
             }
+            // The pointer state also watches keys, modifiers and focus, so every event goes
+            // through it; only pointer events stop here.
+            let hit = |p| layout.hit(p, cols, rows);
+            let action = self.pointer.handle(event, Instant::now(), mode, hit);
+            if matches!(
+                event,
+                egui::Event::PointerButton { .. } | egui::Event::PointerMoved(_)
+            ) {
+                match action {
+                    Some(PointerAction::Write(bytes)) => session.write(bytes),
+                    Some(PointerAction::StartSelection(ty, cell, side)) => {
+                        session.start_selection(ty, cell, side);
+                    }
+                    Some(PointerAction::UpdateSelection(cell, side)) => {
+                        session.update_selection(cell, side);
+                    }
+                    None => {}
+                }
+                continue;
+            }
             match self.keyboard.feed(event, modes) {
                 Some(Input::Write(bytes)) => session.send_input(bytes),
-                Some(Input::Copy) => debug!("copy shortcut: selection arrives in Step 9"),
+                Some(Input::Copy) => {
+                    if let Some(text) = session.selection_text() {
+                        ctx.copy_text(text);
+                    }
+                }
+                Some(Input::CopyOrInterrupt) => match session.selection_text() {
+                    Some(text) => {
+                        ctx.copy_text(text);
+                        session.clear_selection();
+                    }
+                    None => session.send_input(vec![0x03]),
+                },
                 None => {}
             }
         }
@@ -299,7 +339,7 @@ impl eframe::App for JtermApp {
             .show(ui, |ui| {
                 // The grid is sized from the exact rect the terminal is painted in.
                 let (rect, response) =
-                    ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let padding = self.config.window.padding;
                 let grid = metrics.grid_size(rect, padding);
                 self.update_grid(grid);
