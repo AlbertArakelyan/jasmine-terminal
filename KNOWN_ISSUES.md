@@ -67,7 +67,7 @@ what's still open. Re-run the checklist before every release.
 Run on a Linux machine (X11 and Wayland sessions if possible). Record failures in
 [Open issues](#open-issues).
 
-Most of this is automated: `bash .claude/skills/verify/scripts/linux-checks.sh` runs
+Follow `LINUX_TESTING.md` for the full procedure. Most of this is automated: `bash .claude/skills/verify/scripts/linux-checks.sh` runs
 items 1–8 and 10–16 where the tools are installed, and writes a report with PASS/FAIL and
 screenshots (see `.claude/skills/verify/SKILL.md` → Linux). ssh (9), IME and general feel
 remain manual.
