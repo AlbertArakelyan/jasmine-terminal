@@ -64,8 +64,13 @@ what's still open. Re-run the checklist before every release.
 
 ## Linux checklist
 
-Run on a Linux machine (X11 and Wayland sessions if possible). Build with `cargo run --release`.
-Record failures in [Open issues](#open-issues).
+Run on a Linux machine (X11 and Wayland sessions if possible). Record failures in
+[Open issues](#open-issues).
+
+Most of this is automated: `bash .claude/skills/verify/scripts/linux-checks.sh` runs
+items 1–8 and 10–16 where the tools are installed, and writes a report with PASS/FAIL and
+screenshots (see `.claude/skills/verify/SKILL.md` → Linux). ssh (9), IME and general feel
+remain manual.
 
 1. **Launch** on Wayland and on X11 (`WAYLAND_DISPLAY= cargo run` forces X11 under XWayland).
    The window opens, the shell prompt renders, and the log shows `spawning default login shell`
