@@ -85,7 +85,7 @@ impl JtermApp {
         }
     }
 
-    /// Records the grid size for the current rect. Step 7 will resize the terminal here.
+    /// Records the grid size for the current rect, for logging.
     fn update_grid(&mut self, grid: GridSize) {
         if self.grid == Some(grid) {
             return;
@@ -98,10 +98,10 @@ impl JtermApp {
         self.grid = Some(grid);
     }
 
-    fn ensure_session(&mut self, ctx: &egui::Context, grid: GridSize, metrics: CellMetrics) {
-        if self.session.is_some() || self.spawn_error.is_some() {
-            return;
-        }
+    /// Starts the shell on the first frame, and afterwards keeps the terminal and PTY sized
+    /// to the window. The grid size is whole cells, so pixel changes smaller than a cell
+    /// (and repeated frames at the same size) don't resize anything.
+    fn sync_session(&mut self, ctx: &egui::Context, grid: GridSize, metrics: CellMetrics) {
         // The PTY wants the cell size in physical pixels; metrics are snapped, so this is exact.
         let to_px = |points: f32| (points * ctx.pixels_per_point()).round() as u16;
         let size = TermSize {
@@ -110,6 +110,13 @@ impl JtermApp {
             cell_width: to_px(metrics.width),
             cell_height: to_px(metrics.height),
         };
+        if let Some(session) = &mut self.session {
+            session.resize(size);
+            return;
+        }
+        if self.spawn_error.is_some() {
+            return;
+        }
         match TerminalSession::spawn(&self.config, size, ctx.clone()) {
             Ok(session) => {
                 if let Some(exit) = &mut self.debug_exit {
@@ -191,9 +198,12 @@ impl JtermApp {
                         .into_bytes(),
                     );
                 }
+                // CSI 14 t / 18 t: programs asking for the text area size in pixels or cells.
+                Event::TextAreaSizeRequest(format) => {
+                    session.write(format(session.size().into()).into_bytes());
+                }
                 // Deliberately unanswered: letting programs read the clipboard is a data
-                // leak, and SPEC §4.16 denies OSC 52 reads by default. TextAreaSizeRequest
-                // still needs an answer (Step 7).
+                // leak, and SPEC §4.16 denies OSC 52 reads by default.
                 Event::ClipboardLoad(..) => debug!("ignored clipboard read request"),
                 // Titles are terminal content: debug level only (SPEC §4.16).
                 other => debug!(event = ?other, "unhandled terminal event"),
@@ -240,7 +250,7 @@ impl eframe::App for JtermApp {
                 let padding = self.config.window.padding;
                 let grid = metrics.grid_size(rect, padding);
                 self.update_grid(grid);
-                self.ensure_session(&ctx, grid, metrics);
+                self.sync_session(&ctx, grid, metrics);
                 self.handle_keyboard(&ctx, &response);
 
                 let painter = ui.painter_at(rect);

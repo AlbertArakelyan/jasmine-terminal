@@ -7,6 +7,7 @@
 # Separate groups with "||" to type them -KeyDelayMs apart (pwsh -File can't pass arrays), e.g.
 #   -Keys "Start-Sleep 100{ENTER}||^c" -KeyDelayMs 1500
 # -StartDelayMs waits before the first group, e.g. for a slow shell profile to load.
+# A group of the form "<resize 1300x800>" resizes the window (outer size, in pixels) instead of typing.
 # Exit code 1 if the process exited early or no window appeared.
 param(
     [int]$Seconds = 4,
@@ -28,6 +29,7 @@ Add-Type -Namespace Smoke -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, System.IntPtr pid);
 [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(System.IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr after, int x, int y, int w, int ht, uint flags);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 // Windows only lets the foreground thread change the foreground window. Attaching to its
 // input queue for the call is the standard way for a test driver to bring a window forward.
@@ -69,6 +71,13 @@ try {
             $shell = New-Object -ComObject WScript.Shell
             for ($i = 0; $i -lt $groups.Count; $i++) {
                 if ($i -gt 0) { Start-Sleep -Milliseconds $KeyDelayMs }
+                if ($groups[$i] -match '^<resize (\d+)x(\d+)>$') {
+                    # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+                    [void][Smoke.Win]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, [int]$Matches[1], [int]$Matches[2], 0x16)
+                    $r = New-Object Smoke.Win+RECT; [void][Smoke.Win]::GetClientRect($h, [ref]$r)
+                    Write-Output "resized: client=$($r.R)x$($r.B)"
+                    continue
+                }
                 # SendKeys types into whatever window is in front. Never type unless that's
                 # jterm, or the keys could land in one of the user's own windows.
                 $front = $false

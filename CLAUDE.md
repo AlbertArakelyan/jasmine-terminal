@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-MVP Steps 1–6 are done: config, the bundled font, cell metrics, the shell in a PTY, grid rendering and keyboard input. `cargo run` opens a 1000×650 window running the shell (PowerShell 7 on this machine) that you can type into: commands, Ctrl combinations, history, Tab completion and vim all work. The terminal isn't resized with the window yet (Step 7), and there's no scrollback UI, selection or copy yet (Steps 8–9). The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Steps 1–7 are done: config, the bundled font, cell metrics, the shell in a PTY, grid rendering, keyboard input and resize. `cargo run` opens a 1000×650 window running the shell (PowerShell 7 on this machine) that you can type into. Commands, Ctrl combinations, history, Tab completion and vim all work, and the grid and the shell follow window resizes. There's no scrollback UI, selection or copy yet (Steps 8–9). The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
@@ -81,6 +81,12 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
   - Paste: bracketed paste wraps the text and strips ESC and ^C, so the bracket can't be closed early. Without bracketed paste, newlines become CR.
   - The terminal widget keeps focus, and a focus lock filter keeps Tab, Escape and the arrows from moving egui focus. `zoom_with_keyboard` is off, so Ctrl+- reaches the shell.
   - Typing scrolls the view to the bottom (`send_input`).
+- **Resize:**
+  - Each frame, `JtermApp::sync_session` builds a `TermSize` (grid from the painted rect, plus the cell size in physical pixels) and calls `TerminalSession::resize`. That's a no-op unless the size changed, and since the grid is whole cells, sub-cell pixel changes never resize.
+  - `resize` calls `Term::resize`, which reflows, then `Notifier::on_resize`, which sends `Msg::Resize` to the PTY (ConPTY resize, or TIOCSWINSZ/SIGWINCH on Unix).
+  - `TextAreaSizeRequest` (CSI 14/18 t) is answered from `session.size()`.
+  - `resize_reaches_the_shell` checks that the shell itself sees the new size (`mode con` / `stty size`).
+  - **Known external issue:** Git Bash (MSYS2) under ConPTY drops the first key typed after a resize. PowerShell doesn't; jterm does send the key (seen in trace logs).
 - **Windows Ctrl+C:** children inherit the parent's "ignore Ctrl+C" flag. When jterm was started from Git Bash or cargo, ^C (0x03) reached ConPTY but interrupted nothing. `enable_ctrl_c_for_children()` calls `SetConsoleCtrlHandler(NULL, FALSE)` before spawning. `ctrl_c_interrupts_a_running_program` covers it.
 - **Typing into the app from tests:** `smoke.ps1 -Keys "group1||group2" -KeyDelayMs N -StartDelayMs N` uses SendKeys syntax. It first makes jterm the foreground window (via `AttachThreadInput`) and refuses to type otherwise, because SendKeys goes to whatever window is in front and stray keys landed in the user's windows before this check existed. The user's PowerShell profile takes about 1–1.6 s to load, so use `-StartDelayMs 3000`. Test commands end up in the user's PSReadLine history.
 - **Known rendering gaps (Step 5 review, deferred):**

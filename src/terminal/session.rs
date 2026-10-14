@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 
-use alacritty_terminal::event::{Event, WindowSize};
+use alacritty_terminal::event::{Event, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{self, EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::grid::Scroll;
@@ -69,6 +69,8 @@ pub struct TerminalSession {
     /// The PTY I/O thread. It also stops without an `Exit` event when a PTY read or write
     /// fails, so a finished thread counts as the shell having exited.
     io_thread: JoinHandle<(EventLoop<tty::Pty, EventProxy>, event_loop::State)>,
+    /// Current grid and cell size, as last given to the `Term` and the PTY.
+    size: TermSize,
     pub exited: bool,
 }
 
@@ -110,6 +112,7 @@ impl TerminalSession {
             events_rx,
             proxy,
             io_thread,
+            size,
             exited: false,
         })
     }
@@ -127,6 +130,22 @@ impl TerminalSession {
     }
 
     /// Terminal modes that change what keys send.
+    pub fn size(&self) -> TermSize {
+        self.size
+    }
+
+    /// Resizes the grid (reflowing wrapped lines) and tells the shell the new size, which
+    /// it receives as SIGWINCH on Unix or a console resize under ConPTY. No-op when the
+    /// size is unchanged, so callers can call it every frame.
+    pub fn resize(&mut self, size: TermSize) {
+        if size == self.size {
+            return;
+        }
+        self.term.lock().resize(size);
+        self.notifier.on_resize(size.into());
+        self.size = size;
+    }
+
     pub fn input_modes(&self) -> InputModes {
         let mode = *self.term.lock().mode();
         InputModes {
@@ -362,5 +381,62 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(session.exited, "^C did not stop the program");
+    }
+    /// SPEC Step 7: a resize reaches both the grid and the shell. The shell is asked for its
+    /// own idea of the size, so this checks the PTY (ConPTY / TIOCSWINSZ), not just `Term`.
+    #[test]
+    fn resize_reaches_the_shell() {
+        let program = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
+        let config = Config {
+            shell: shell(Some(program), &[]),
+            ..Config::default()
+        };
+        let size = |cols, rows| TermSize {
+            cols,
+            rows,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut session =
+            TerminalSession::spawn(&config, size(80, 24), egui::Context::default()).expect("spawn");
+        session.resize(size(100, 30));
+        assert_eq!(session.size(), size(100, 30));
+        {
+            let term = session.term.lock();
+            assert_eq!((term.columns(), term.screen_lines()), (100, 30));
+        }
+
+        // `mode con` (cmd) and `stty size` (sh) print the size the shell's console has.
+        let query: &[u8] = if cfg!(windows) {
+            b"mode con\r"
+        } else {
+            b"stty size\r"
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        session.write(query);
+        let expected: &[&str] = if cfg!(windows) {
+            &["Lines:          30", "Columns:        100"]
+        } else {
+            &["30 100"]
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut screen = String::new();
+        while Instant::now() < deadline {
+            session.poll_events();
+            screen = session
+                .snapshot(&crate::config::theme::Theme::default())
+                .cells
+                .iter()
+                .map(|c| c.c)
+                .collect();
+            if expected.iter().all(|e| screen.contains(e)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!(
+            "shell didn't report the new size {expected:?}; screen:\n{}",
+            screen.trim()
+        );
     }
 }

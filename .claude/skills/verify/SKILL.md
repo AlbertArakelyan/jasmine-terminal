@@ -39,6 +39,8 @@ Options:
   - Example: an automated vim check is
     `-Keys "nvim -u NONE '<scratch>/t.txt'{ENTER}||ihello{ESC}||hhx||{LEFT}x||:wq{ENTER}"`,
     after which the file should contain `hlo`.
+- A `<resize WxH>` group resizes the window (outer size in pixels) instead of typing, e.g.
+  `-Keys "echo a{ENTER}||<resize 700x450>||$Host.UI.RawUI.WindowSize{ENTER}"`.
 - `-Seconds N` — total run time, including key delays; output settles before the screenshot is taken.
 
 Linux/macOS: `bash .claude/skills/verify/scripts/smoke.sh 4` (alive check and logs only).
