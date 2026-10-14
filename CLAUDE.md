@@ -126,6 +126,8 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
   - **DIM:** always 2/3 brightness. alacritty instead uses the Dim* palette entries for named colors, so OSC changes to Dim* colors are ignored.
   - **Performance:** a screen of all-different colors is about 4,300 galleys per frame. `Palette::new` runs under the lock every frame, and `fits` uses a SipHash map. Profile in Step 11.
 - **Fonts on this machine:** the user's oh-my-posh prompt uses Nerd Font icons, which JetBrains Mono lacks, so they show as boxes. CaskaydiaCove Nerd Font is installed, and `font.path` can point to it. CJK and Braille show as boxes because no system fallback font is loaded yet; planned for Step 11.
+  - egui's `emoji-icon-font` is removed from the terminal's fallback chain (`fonts::terminal_fallbacks`). It puts egui UI icons on Private Use Area codepoints that clash with Nerd Fonts: oh-my-posh's Windows logo U+E62A rendered as a Chrome logo. egui's NotoEmoji stays.
+  - The bundled font is plain JetBrains Mono, not the Nerd Font build. Options discussed with the user, not decided yet: bundle Symbols Nerd Font Mono as a fallback, add a `font.fallback_paths` config, or bundle JetBrains Mono Nerd Font.
 - **Rendering checks without keyboard input:** run a PowerShell test script as the shell, by backing up the config and setting `[shell] program = 'pwsh.exe'`, `args = ['-NoLogo', '-NoProfile', '-NoExit', '-File', '<abs path>/.claude/skills/vt-tests/scripts/<test>.ps1']`. Take a `smoke.ps1 -Screenshot`, then restore the config.
 - Config validation: `font.size` must be 4–200 and `window.padding` finite and ≥ 0. Otherwise the whole config falls back to defaults, like any other invalid value.
 
