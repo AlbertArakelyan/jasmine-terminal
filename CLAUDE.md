@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-MVP Steps 1–4 are done: the SPEC §3.3 module layout exists, config loading works, the bundled font is registered, cell metrics and the grid size are computed, and the shell runs in a PTY. `cargo run` opens a 1000×650 window filled with the theme background (nothing is drawn yet) and starts the shell. The log shows the cell and grid size (8×18pt cells, 123×35 grid at the defaults), the shell spawn and its first output. The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Steps 1–5 are done: config, the bundled font, cell metrics, the shell in a PTY, and grid rendering. `cargo run` opens a 1000×650 window showing the shell (PowerShell 7 on this machine) with full colors and text attributes. There's no keyboard input yet (Step 6), and the terminal isn't resized with the window yet (Step 7). The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
@@ -59,10 +59,23 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
   - A spawn failure is logged and not retried.
 - **`JTERM_DEBUG_EXIT_AFTER_MS=N`** (debug builds only) writes `exit\r` to the shell N ms after it spawns, to test the exit path without keyboard input: `JTERM_DEBUG_EXIT_AFTER_MS=1500 pwsh -NoProfile -File .claude/skills/verify/scripts/smoke.ps1 -Seconds 6`. The smoke script then reports `FAIL: process exited`, which is expected here.
 - Logging: the first `Wakeup` is logged at info and later (coalesced) ones at debug (`RUST_LOG=jterm=debug`). Window titles and other terminal content are only logged at debug.
-- **For Step 5 (from the Step 3 review):**
-  - The snapped `width` differs from the font's real `advance` (8.0 vs 8.4pt at 14pt), and egui lays out galleys with `advance`. When a run of cells is painted as one galley, set `TextFormat::extra_letter_spacing = width - advance`, or text drifts off its cells, cursor and selection. Add a test that an N-char galley is about `N * width` wide.
-  - Snap the grid origin (`rect.min + padding`) to physical pixels too, e.g. `ctx.round_pos_to_pixels`.
-  - Compute `grid_size` from the rect `terminal_view` actually paints in, not from `max_rect()` in `app.rs`.
+- **Snapshot** (`terminal/snapshot.rs`): `RenderSnapshot::capture` runs under the `Term` lock and copies the visible cells with colors already resolved to `Color32`. `Palette` holds all 269 alacritty color slots: a color the program set (OSC 4/10/11) wins, then the theme, then the xterm 256-color values. DIM is 2/3 brightness, INVERSE swaps fg/bg after dimming, and HIDDEN sets fg to bg. Bold uses the bold face; it doesn't brighten the color.
+- **Renderer** (`ui/terminal_view.rs`):
+  - Paints the default background, then background runs, then text runs, then the cursor.
+  - A text run is one galley of adjacent cells with the same fg and style. Undecorated spaces join any run, so they don't split it.
+  - Runs use `extra_letter_spacing = cell.width - advance` (advance measured per face) to stay on the cell grid; `runs_stay_on_the_cell_grid` tests this.
+  - Wide chars, and any non-ASCII char whose advance differs from the face's (CJK, emoji, fallback-font glyphs, cached in `fits`), are painted alone, centered in their 1 or 2 cells.
+  - The origin is `rect.min + padding` snapped to pixels. The grid size comes from the rect the app allocates and paints into.
+  - Cursor: block (glyph redrawn in the cell's bg), beam and underline are 2px. It's a hollow block when the window is unfocused or the shape is HollowBlock.
+  - Control characters (alacritty stores a literal `\t` in tab cells) are drawn as spaces. egui would lay out `\t` 4 cells wide. Underline and strikethrough are drawn with `painter.hline` over whole cells, not egui's text decorations, which stop short of the last cell. U+2009 and U+202F never join runs, because egui narrows them.
+- `ColorRequest` (OSC 4/10/11 queries) is answered from `session.color(index, theme)`. A shell spawn error is shown in the window.
+- **Known rendering gaps (Step 5 review, deferred):**
+  - **Ligatures:** egui shapes text with harfrust and default features, so JetBrains Mono ligatures (`->`, `!=`) render even though SPEC puts ligatures in Phase 4. egui has no switch to turn them off. A ligature can also look different where a run splits or under the block cursor, and a user font with true multi-char ligatures or kerning could drift. Options: accept it, strip `liga`/`calt` from the bundled font, or a custom renderer in Phase 4.
+  - **Combining marks:** `cell.zerowidth()` isn't rendered, so decomposed accents and ZWJ/VS16 emoji show only the base char.
+  - **DIM:** always 2/3 brightness. alacritty instead uses the Dim* palette entries for named colors, so OSC changes to Dim* colors are ignored.
+  - **Performance:** a screen of all-different colors is about 4,300 galleys per frame. `Palette::new` runs under the lock every frame, and `fits` uses a SipHash map. Profile in Step 11.
+- **Fonts on this machine:** the user's oh-my-posh prompt uses Nerd Font icons, which JetBrains Mono lacks, so they show as boxes. CaskaydiaCove Nerd Font is installed, and `font.path` can point to it. CJK and Braille show as boxes because no system fallback font is loaded yet; planned for Step 11.
+- **Rendering checks without keyboard input:** run a PowerShell test script as the shell, by backing up the config and setting `[shell] program = 'pwsh.exe'`, `args = ['-NoLogo', '-NoProfile', '-NoExit', '-File', '<abs path>/.claude/skills/vt-tests/scripts/<test>.ps1']`. Take a `smoke.ps1 -Screenshot`, then restore the config.
 - Config validation: `font.size` must be 4–200 and `window.padding` finite and ≥ 0. Otherwise the whole config falls back to defaults, like any other invalid value.
 
 ## Conventions (SPEC §8)

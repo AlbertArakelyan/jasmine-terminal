@@ -3,4 +3,4 @@
 
 pub mod event_proxy;
 pub mod session;
-mod snapshot;
+pub mod snapshot;

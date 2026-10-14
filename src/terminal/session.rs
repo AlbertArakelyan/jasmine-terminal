@@ -17,6 +17,8 @@ use anyhow::Context as _;
 use tracing::{info, warn};
 
 use super::event_proxy::EventProxy;
+use super::snapshot::{Palette, RenderSnapshot};
+use crate::config::theme::Theme;
 use crate::config::{Config, ShellConfig};
 
 /// Grid size handed to `alacritty_terminal`, which takes it through the `Dimensions` trait.
@@ -58,8 +60,7 @@ impl From<TermSize> for WindowSize {
 /// One shell running in a PTY, plus the terminal state its output is parsed into.
 pub struct TerminalSession {
     /// Shared with the PTY thread. Lock only to copy state out; see CLAUDE.md.
-    #[expect(dead_code, reason = "read by the renderer from Step 5")]
-    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    term: Arc<FairMutex<Term<EventProxy>>>,
     notifier: Notifier,
     events_rx: Receiver<Event>,
     proxy: EventProxy,
@@ -107,6 +108,18 @@ impl TerminalSession {
             io_thread,
             exited: false,
         })
+    }
+
+    /// Copies the visible screen for painting. Holds the `Term` lock only while copying.
+    /// Must not be called inside an egui context closure (see `EventProxy`).
+    pub fn snapshot(&self, theme: &Theme) -> RenderSnapshot {
+        RenderSnapshot::capture(&self.term.lock(), theme)
+    }
+
+    /// The current RGB value of terminal color `index`, for answering OSC 4/10/11 queries.
+    pub fn color(&self, index: usize, theme: &Theme) -> egui::Color32 {
+        let term = self.term.lock();
+        Palette::new(theme, term.colors()).get(index)
     }
 
     /// Queues bytes for the PTY. Never blocks; the I/O thread does the write.

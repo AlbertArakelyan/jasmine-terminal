@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
+use alacritty_terminal::vte::ansi::Rgb;
 use egui::FontId;
 use tracing::{debug, error, info};
 
@@ -11,6 +12,7 @@ use crate::config::Config;
 use crate::terminal::session::{TermSize, TerminalSession};
 use crate::ui::cell_metrics::{CellMetrics, GridSize};
 use crate::ui::fonts;
+use crate::ui::terminal_view::{Layout, TerminalView};
 
 /// Debug builds only: write `exit\r` to the shell this many milliseconds after it starts.
 /// Exercises the shell-exit path end to end (SPEC Step 4) before keyboard input exists.
@@ -26,7 +28,8 @@ pub struct JtermApp {
     grid: Option<GridSize>,
     /// Started on the first frame, once the grid size is known.
     session: Option<TerminalSession>,
-    spawn_failed: bool,
+    spawn_error: Option<String>,
+    view: TerminalView,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -48,7 +51,8 @@ impl JtermApp {
             metrics: None,
             grid: None,
             session: None,
-            spawn_failed: false,
+            spawn_error: None,
+            view: TerminalView::default(),
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -90,7 +94,7 @@ impl JtermApp {
     }
 
     fn ensure_session(&mut self, ctx: &egui::Context, grid: GridSize, metrics: CellMetrics) {
-        if self.session.is_some() || self.spawn_failed {
+        if self.session.is_some() || self.spawn_error.is_some() {
             return;
         }
         // The PTY wants the cell size in physical pixels; metrics are snapped, so this is exact.
@@ -109,9 +113,9 @@ impl JtermApp {
                 self.session = Some(session);
             }
             Err(e) => {
-                // Don't retry every frame. Step 5 will show this in the window.
+                // Shown in the window; not retried every frame.
                 error!("{e:#}");
-                self.spawn_failed = true;
+                self.spawn_error = Some(format!("{e:#}"));
             }
         }
     }
@@ -132,9 +136,22 @@ impl JtermApp {
                 }
                 Event::ChildExit(status) => info!(%status, "shell exited"),
                 Event::Exit => info!("terminal exited"),
+                // OSC 4/10/11 queries: programs like vim, bat and delta ask for the
+                // background color to pick light or dark styles.
+                Event::ColorRequest(index, format) => {
+                    let c = session.color(index, &self.config.theme);
+                    session.write(
+                        format(Rgb {
+                            r: c.r(),
+                            g: c.g(),
+                            b: c.b(),
+                        })
+                        .into_bytes(),
+                    );
+                }
                 // Deliberately unanswered: letting programs read the clipboard is a data
                 // leak, and SPEC §4.16 denies OSC 52 reads by default. TextAreaSizeRequest
-                // (Step 7) and ColorRequest (Step 5) still need answers.
+                // still needs an answer (Step 7).
                 Event::ClipboardLoad(..) => debug!("ignored clipboard read request"),
                 // Titles are terminal content: debug level only (SPEC §4.16).
                 other => debug!(event = ?other, "unhandled terminal event"),
@@ -166,18 +183,39 @@ impl JtermApp {
 impl eframe::App for JtermApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Events first: replies to color queries and exit handling shouldn't wait a frame.
+        self.handle_terminal_events(&ctx);
+
         let metrics = self.cell_metrics(&ctx);
-        let mut grid = None;
+        // Read before snapshotting: never lock `Term` inside an egui context closure.
+        let focused = ctx.input(|i| i.focused);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(self.config.theme.background.into()))
             .show(ui, |ui| {
-                grid = Some(metrics.grid_size(ui.max_rect(), self.config.window.padding));
+                // The grid is sized from the exact rect the terminal is painted in.
+                let (rect, _response) =
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+                let padding = self.config.window.padding;
+                let grid = metrics.grid_size(rect, padding);
+                self.update_grid(grid);
+                self.ensure_session(&ctx, grid, metrics);
+
+                let painter = ui.painter_at(rect);
+                if let Some(session) = &self.session {
+                    let snapshot = session.snapshot(&self.config.theme);
+                    let layout =
+                        Layout::new(&ctx, rect, padding, metrics, self.config.font.size, focused);
+                    self.view.paint(&painter, rect, layout, &snapshot);
+                } else if let Some(error) = &self.spawn_error {
+                    painter.text(
+                        rect.min + egui::vec2(padding, padding),
+                        egui::Align2::LEFT_TOP,
+                        format!("jterm could not start the shell:\n{error}"),
+                        egui::FontId::monospace(self.config.font.size),
+                        self.config.theme.normal.red.into(),
+                    );
+                }
             });
-        if let Some(grid) = grid {
-            self.update_grid(grid);
-            self.ensure_session(&ctx, grid, metrics);
-        }
-        self.handle_terminal_events(&ctx);
     }
 }
 

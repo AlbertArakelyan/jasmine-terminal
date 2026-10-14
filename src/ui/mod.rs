@@ -3,4 +3,4 @@
 pub mod cell_metrics;
 pub mod fonts;
 mod input_map;
-mod terminal_view;
+pub mod terminal_view;
