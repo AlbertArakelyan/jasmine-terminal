@@ -16,13 +16,14 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::tty;
+use alacritty_terminal::vte::ansi;
 use anyhow::Context as _;
 use tracing::{info, warn};
 
 use super::event_proxy::EventProxy;
 use super::snapshot::{Palette, RenderSnapshot};
 use crate::config::theme::Theme;
-use crate::config::{Config, ShellConfig};
+use crate::config::{Config, CursorStyle, ShellConfig};
 
 /// Grid size handed to `alacritty_terminal`, which takes it through the `Dimensions` trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,15 @@ impl TerminalSession {
 
         let term_config = term::Config {
             scrolling_history: config.scrollback.lines,
+            // Programs can change the cursor (DECSCUSR); a reset (CSI 0 q) returns to this.
+            default_cursor_style: ansi::CursorStyle {
+                shape: match config.cursor.style {
+                    CursorStyle::Block => ansi::CursorShape::Block,
+                    CursorStyle::Beam => ansi::CursorShape::Beam,
+                    CursorStyle::Underline => ansi::CursorShape::Underline,
+                },
+                blinking: config.cursor.blink,
+            },
             ..term::Config::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &size, proxy.clone())));

@@ -8,6 +8,7 @@
 //! their cells.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use alacritty_terminal::index::Side;
 use alacritty_terminal::vte::ansi::CursorShape;
@@ -73,6 +74,8 @@ pub struct Layout {
     pub cell: CellMetrics,
     pub font_size: f32,
     pub focused: bool,
+    /// False during the "off" half of a cursor blink.
+    pub cursor_visible: bool,
 }
 
 impl Layout {
@@ -89,6 +92,7 @@ impl Layout {
             cell,
             font_size,
             focused,
+            cursor_visible: true,
         }
     }
 
@@ -320,6 +324,9 @@ impl TerminalView {
         let Some(cursor) = snap.cursor else {
             return;
         };
+        if !layout.cursor_visible {
+            return;
+        }
         let cells = if cursor.wide { 2 } else { 1 };
         let rect = layout.cell_rect(cursor.row, cursor.col, cells);
         let px = 1.0 / painter.ctx().pixels_per_point();
@@ -385,6 +392,21 @@ impl TerminalView {
             CursorShape::Hidden => {}
         }
     }
+}
+
+/// Half a cursor blink cycle: the Windows default caret blink rate.
+pub const BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
+/// Whether a blinking cursor is visible `elapsed` after the blink cycle started (the last
+/// keystroke or focus gain), and how long until it toggles. The cycle starts visible, so
+/// the cursor never disappears just as the user types. Callers repaint after the returned
+/// delay rather than every frame, so a blinking cursor costs two repaints a second.
+pub fn cursor_blink(elapsed: Duration) -> (bool, Duration) {
+    let interval = BLINK_INTERVAL.as_millis();
+    let ms = elapsed.as_millis();
+    let visible = (ms / interval).is_multiple_of(2);
+    let until_toggle = Duration::from_millis((interval - ms % interval) as u64);
+    (visible, until_toggle)
 }
 
 /// While viewing history, a small "↑ N" badge in the top-right corner shows how far up the
@@ -489,6 +511,27 @@ mod tests {
                     "ppp {ppp}: glyph {col} at {x}, expected {expected}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cursor_blink_phases() {
+        let ms = Duration::from_millis;
+        // (elapsed, visible, until toggle)
+        let cases = [
+            (0, true, 530),
+            (100, true, 430),
+            (529, true, 1),
+            (530, false, 530),
+            (1000, false, 60),
+            (1060, true, 530),
+        ];
+        for (elapsed, visible, until) in cases {
+            assert_eq!(
+                cursor_blink(ms(elapsed)),
+                (visible, ms(until)),
+                "at {elapsed} ms"
+            );
         }
     }
 

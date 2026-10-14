@@ -46,6 +46,8 @@ pub struct RenderCursor {
     pub color: Color32,
     /// The cursor sits on a wide character and covers two cells.
     pub wide: bool,
+    /// Blinks: from `cursor.blink`, or a program asked for it (DECSCUSR, ATT610).
+    pub blinking: bool,
 }
 
 /// Everything needed to paint one frame of the terminal.
@@ -115,6 +117,7 @@ impl RenderSnapshot {
                 shape: content.cursor.shape,
                 color: palette.get(NamedColor::Cursor as usize),
                 wide: cells.get(row * cols + col).is_some_and(|c| c.wide),
+                blinking: term.cursor_style().blinking,
             }
         });
 

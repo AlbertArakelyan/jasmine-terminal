@@ -163,7 +163,7 @@ try {
         }
         $p.Refresh()
         if ($p.HasExited) { Write-Output "FAIL: process exited during the run (code $($p.ExitCode))"; $status = 1 }
-        else { Write-Output "alive: yes" }
+        else { Write-Output "alive: yes"; Write-Output "final title: '$($p.MainWindowTitle)'" }
     }
 }
 finally {

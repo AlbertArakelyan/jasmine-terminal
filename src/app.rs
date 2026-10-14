@@ -16,11 +16,17 @@ use crate::ui::cell_metrics::{CellMetrics, GridSize};
 use crate::ui::fonts;
 use crate::ui::input_map::{Input, InputModes, KeyboardState};
 use crate::ui::mouse::{self, PointerAction, PointerState, WheelAccumulator, WheelAction};
-use crate::ui::terminal_view::{Layout, TerminalView};
+use crate::ui::terminal_view::{Layout, TerminalView, cursor_blink};
 
 /// Debug builds only: write `exit\r` to the shell this many milliseconds after it starts.
 /// Exercises the shell-exit path end to end (SPEC Step 4) before keyboard input exists.
 const DEBUG_EXIT_ENV: &str = "JTERM_DEBUG_EXIT_AFTER_MS";
+
+/// Window title until a program sets one, and after it resets it.
+const DEFAULT_TITLE: &str = "jterm";
+
+/// How long the visual bell flash takes to fade out.
+const BELL_DURATION: Duration = Duration::from_millis(150);
 
 /// Root application state.
 pub struct JtermApp {
@@ -37,6 +43,11 @@ pub struct JtermApp {
     keyboard: KeyboardState,
     wheel: WheelAccumulator,
     pointer: PointerState,
+    /// Start of the current cursor blink cycle; reset on typing and focus, so the cursor
+    /// is solid while the user types.
+    blink_epoch: Instant,
+    /// When the visual bell started, while its flash is fading.
+    bell_at: Option<Instant>,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -65,6 +76,8 @@ impl JtermApp {
             keyboard: KeyboardState::default(),
             wheel: WheelAccumulator::default(),
             pointer: PointerState::default(),
+            blink_epoch: Instant::now(),
+            bell_at: None,
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -171,6 +184,15 @@ impl JtermApp {
         for event in &events {
             // Keystrokes are only ever logged at trace level (SPEC §4.16).
             tracing::trace!(?event, "input event");
+            if matches!(
+                event,
+                egui::Event::Key { pressed: true, .. }
+                    | egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::WindowFocused(true)
+            ) {
+                self.blink_epoch = Instant::now();
+            }
             match event {
                 egui::Event::MouseWheel {
                     unit,
@@ -262,6 +284,28 @@ impl JtermApp {
         }
     }
 
+    /// The visual bell: a translucent flash over the terminal that fades out over
+    /// `BELL_DURATION`. Repaints are requested only while it's fading.
+    fn paint_bell(
+        &mut self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        color: egui::Color32,
+    ) {
+        let Some(at) = self.bell_at else {
+            return;
+        };
+        let elapsed = at.elapsed();
+        if elapsed >= BELL_DURATION {
+            self.bell_at = None;
+            return;
+        }
+        let fade = 1.0 - elapsed.as_secs_f32() / BELL_DURATION.as_secs_f32();
+        painter.rect_filled(rect, 0.0, color.gamma_multiply(0.25 * fade));
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+
     fn handle_terminal_events(&mut self, ctx: &egui::Context) {
         let Some(session) = &mut self.session else {
             return;
@@ -277,6 +321,15 @@ impl JtermApp {
                     }
                 }
                 Event::ChildExit(status) => info!(%status, "shell exited"),
+                // OSC 0/2. Titles are terminal content: debug level only (SPEC §4.16).
+                Event::Title(title) => {
+                    debug!(title, "window title");
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+                }
+                Event::ResetTitle => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(DEFAULT_TITLE.to_owned()));
+                }
+                Event::Bell if self.config.bell.visual => self.bell_at = Some(Instant::now()),
                 Event::Exit => info!("terminal exited"),
                 // OSC 4/10/11 queries: programs like vim, bat and delta ask for the
                 // background color to pick light or dark styles.
@@ -351,7 +404,16 @@ impl eframe::App for JtermApp {
                 let painter = ui.painter_at(rect);
                 if let Some(session) = &self.session {
                     let snapshot = session.snapshot(&self.config.theme);
+                    let mut layout = layout;
+                    // Blink only while focused; an unfocused window shows a steady hollow box
+                    // and schedules no repaints, so it stays idle.
+                    if focused && snapshot.cursor.is_some_and(|c| c.blinking) {
+                        let (visible, until_toggle) = cursor_blink(self.blink_epoch.elapsed());
+                        layout.cursor_visible = visible;
+                        ctx.request_repaint_after(until_toggle);
+                    }
                     self.view.paint(&painter, rect, layout, &snapshot);
+                    self.paint_bell(&ctx, &painter, rect, snapshot.foreground);
                     // egui-winit only enables the OS IME while this is set, and places the
                     // composition window at the cursor.
                     if response.has_focus() {
