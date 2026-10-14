@@ -17,7 +17,7 @@ Notes:
 - **Never write a VT/ANSI parser or terminal grid.** Use `alacritty_terminal` (its `tty` module for the PTY, `event_loop::EventLoop` for I/O). Study `egui_term` as the reference implementation.
 - Before adding a dependency, look up its current version on crates.io and use the latest release. Don't rely on versions from memory. `egui_term` doesn't constrain our versions. It may target an older `egui`, so adapt any code borrowed from it to our egui API.
 - If the spec turns out to be wrong or impossible with the chosen crates, stop, explain the conflict and propose an alternative. Don't deviate silently.
-- After each step, run the checks below, then commit as `mvp(step-N): <summary>` (later phases use `phase1: ...` and so on).
+- After each step, run the checks below, then commit as `mvp(step-N): <summary>` (later phases use `phase1: ...` and so on). Commit directly on `main`; don't create feature branches unless asked.
 
 ## Commands
 
@@ -50,3 +50,24 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
 - Doc comments on public items explain *why*.
 - Never log keystrokes or terminal content at the default log level. No telemetry or network calls (AI is opt-in, Phase 5).
 - Tests: table-driven key→bytes tests covering normal and application cursor modes, config parse and fallback tests, and headless integration tests that spawn a session and assert grid contents through `Term` APIs.
+
+## Claude Code setup (`.claude/`)
+
+- **`/mvp-step N`**: the end-to-end workflow for an MVP step: research, implement, verify every acceptance criterion, update docs, commit. Use it for every step.
+- **`verify` skill**: the gates plus `.claude/skills/verify/scripts/smoke.ps1`, which launches `jterm.exe` and reports the window title and size, `alive`, and log lines. `-Screenshot <png>` captures the window (Read the PNG to check rendering), and `-Keys "<SendKeys>"` types into it. `smoke.sh` is the Linux/macOS fallback (alive check and logs only).
+- **`vt-tests` skill**: escape-sequence scripts for Steps 5–11 (256 colors, truecolor, SGR attributes, wide chars, OSC title and bell, cursor key modes) with their expected results, plus the Step 11 manual checklist.
+- **Agents:**
+  - `crate-researcher` looks up the real API of a crate at our `Cargo.lock` version, using registry source, context7 and egui_term.
+  - `rust-reviewer` reviews a diff against the SPEC rules.
+  - `acceptance-checker` gives an independent PASS/FAIL/MANUAL verdict per acceptance criterion.
+- **Hooks** (`.claude/settings.json`, scripts in `.claude/hooks/`, require `jq`):
+  - Edited `.rs` files are run through `rustfmt` automatically.
+  - Every `git commit` that touches Rust code, Cargo files or assets runs `cargo fmt --check`, clippy `-D warnings` and `cargo test` first, and is blocked if any fail. Fix the cause; never bypass it.
+  - Session start reports the last `mvp(step-N)` commit and the next step.
+- **MCP:** `.mcp.json` is gitignored. Copy `.mcp.example.json` to `.mcp.json`, then either put your Context7 key in the `Authorization` header or delete the `headers` block to use Context7 without a key (rate-limited). Use context7 for egui/eframe/alacritty_terminal docs, but check anything it says against the local source.
+
+## Gotchas
+
+- Crate APIs here are newer than model training data. Read the real source in `~/.cargo/registry/src/*/<crate>-<version>/` (version from `Cargo.lock`) before writing code against egui/eframe/alacritty_terminal.
+- Don't edit text containing backslashes (Windows paths) with `sed`/`perl` from Git Bash; escapes get silently corrupted. Use the Edit tool.
+- winit opens an untitled helper window before the real one, so window checks must wait for the titled window (`smoke.ps1` does).

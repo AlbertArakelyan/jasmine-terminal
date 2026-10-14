@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cargo build*)",
+      "Bash(cargo check*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo test*)",
+      "Bash(cargo run*)",
+      "Bash(cargo doc*)",
+      "Bash(cargo tree*)",
+      "Bash(cargo metadata*)",
+      "Bash(cargo fetch*)",
+      "Bash(cargo search*)",
+      "Bash(cargo info*)",
+      "Bash(rustc --version*)",
+      "Bash(rustup show*)",
+      "Bash(just*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(pwsh -NoProfile -File .claude/skills/verify/scripts/*)",
+      "Bash(bash .claude/skills/verify/scripts/*)",
+      "Read(~/.cargo/registry/src/**)",
+      "mcp__context7",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)"
+    ]
+  },
+  "enabledMcpjsonServers": ["context7"],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-context.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/commit-gate.sh\"",
+            "timeout": 600,
+            "statusMessage": "Commit gate: fmt, clippy, tests"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/rustfmt-on-edit.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

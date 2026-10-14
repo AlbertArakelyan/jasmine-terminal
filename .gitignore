@@ -1,1 +1,5 @@
 /target
+
+# Claude Code: local MCP config (may hold API keys; copy .mcp.example.json) and personal settings
+/.mcp.json
+/.claude/settings.local.json
