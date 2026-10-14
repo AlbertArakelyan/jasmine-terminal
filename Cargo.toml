@@ -3,4 +3,19 @@ name = "jasmine-terminal"
 version = "0.1.0"
 edition = "2024"
 
+# The package keeps its repo name; the installed binary uses the short name from SPEC.md.
+[[bin]]
+name = "jterm"
+path = "src/main.rs"
+
 [dependencies]
+alacritty_terminal = "0.26"
+anyhow = "1.0.104"
+directories = "6.0.0"
+eframe = "0.35"
+egui = "0.35"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

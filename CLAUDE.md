@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-This repo is a fresh `cargo new` stub (`src/main.rs` prints "Hello, world!"). **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Step 1 (scaffold) is done: the module layout from SPEC §3.3 exists with empty modules, and `cargo run` opens an empty 1000×650 window. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Known gaps between the repo and the spec:
-- The crate is named `jasmine-terminal`, not `jterm`. Step 1 needs a `[[bin]] name = "jterm"` (or a rename); confirm with the user before choosing.
+- The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
+- Versions are pinned to `egui_term`: `egui`/`eframe` 0.35 and `alacritty_terminal` 0.26. eframe 0.35 uses `App::ui(&mut self, ui, frame)`, not the older `update(ctx, frame)`. eframe 0.36 needs Rust 1.95, and the local toolchain is 1.92.
 - `Cargo.toml` uses `edition = "2024"`. The spec says "2021+", so this is fine.
 - Development happens on Windows, but the spec targets Linux first, then macOS, and treats Windows (ConPTY) as a v1 non-goal. Keep code portable. Flag any PTY or platform behaviour that can't be checked on this machine instead of assuming it works.
 
@@ -31,7 +32,7 @@ cargo test <name_substring>     # run a single test / filter by name
 cargo build --release
 ```
 
-MVP Step 1 adds a `justfile` or `Makefile` with `fmt`, `lint`, `test` and `run` targets. Once it exists, prefer it.
+A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt check + clippy with `--all-targets`), `just test`, `just run`. `just` is not installed on this machine yet (`scoop install just`), so run the cargo commands directly until it is. Debug builds log to stderr; set `RUST_LOG` to change the level (default `info,wgpu_hal=error`).
 
 ## Architecture (target, per SPEC §3)
 
