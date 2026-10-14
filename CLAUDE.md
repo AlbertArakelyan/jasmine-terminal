@@ -6,17 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MVP Step 1 (scaffold) is done: the module layout from SPEC §3.3 exists with empty modules, and `cargo run` opens an empty 1000×650 window. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
-Known gaps between the repo and the spec:
+Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
-- Versions are pinned to `egui_term`: `egui`/`eframe` 0.35 and `alacritty_terminal` 0.26. eframe 0.35 uses `App::ui(&mut self, ui, frame)`, not the older `update(ctx, frame)`. eframe 0.36 needs Rust 1.95, and the local toolchain is 1.92.
-- `Cargo.toml` uses `edition = "2024"`. The spec says "2021+", so this is fine.
+- Dependencies are on their latest releases: `egui`/`eframe` 0.36 and `alacritty_terminal` 0.26. eframe 0.36 needs Rust 1.95 or newer, so `Cargo.toml` sets `rust-version = "1.95"`. eframe uses `App::ui(&mut self, ui, frame)`, not the older `update(ctx, frame)`.
 - Development happens on Windows, but the spec targets Linux first, then macOS, and treats Windows (ConPTY) as a v1 non-goal. Keep code portable. Flag any PTY or platform behaviour that can't be checked on this machine instead of assuming it works.
 
 ## Workflow rules from SPEC.md
 
 - Implement MVP steps **in order**. Don't start a step until the previous step's acceptance criteria pass. Don't build post-MVP features (blocks, input editor, tabs, palette, AI), but don't block them either: follow the module layout in SPEC §3.3.
 - **Never write a VT/ANSI parser or terminal grid.** Use `alacritty_terminal` (its `tty` module for the PTY, `event_loop::EventLoop` for I/O). Study `egui_term` as the reference implementation.
-- Before adding a dependency, look up its current version on crates.io and match the `egui`/`alacritty_terminal` versions used by `egui_term`. Don't rely on versions from memory.
+- Before adding a dependency, look up its current version on crates.io and use the latest release. Don't rely on versions from memory. `egui_term` doesn't constrain our versions. It may target an older `egui`, so adapt any code borrowed from it to our egui API.
 - If the spec turns out to be wrong or impossible with the chosen crates, stop, explain the conflict and propose an alternative. Don't deviate silently.
 - After each step, run the checks below, then commit as `mvp(step-N): <summary>` (later phases use `phase1: ...` and so on).
 

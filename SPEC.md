@@ -10,7 +10,7 @@
 1. **Build the MVP first.** The [MVP](#mvp) section is an ordered list of steps. Do them in order. Each step has acceptance criteria. Do not start a step until the previous step's criteria pass.
 2. **Do not implement post-MVP features during the MVP**, but keep the architecture compatible with them. The [Full Feature Spec](#full-feature-spec) says where the project is heading, so module boundaries and data structures should not block those features later.
 3. **Never write a VT/ANSI parser or terminal grid from scratch.** Use `alacritty_terminal`. Terminal emulation correctness is a solved problem; the product value is the UX layer.
-4. **Check current crate versions on crates.io** before adding dependencies. Do not assume versions from memory. Prefer the versions `egui_term` currently uses for `alacritty_terminal`/`egui` compatibility.
+4. **Check current crate versions on crates.io** before adding dependencies. Do not assume versions from memory. Use the latest releases. `egui_term` is a reference for approach only, not a version constraint: `egui` and `alacritty_terminal` don't depend on each other, and `egui_term` may lag behind the latest `egui`.
 5. After each step: `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, run relevant tests, then commit with a message like `mvp(step-3): render terminal grid`.
 6. If something in this spec turns out to be wrong or impossible with the chosen crates, stop, explain the conflict, and propose an alternative instead of silently deviating.
 
@@ -52,10 +52,10 @@ A native terminal that:
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Language | Rust (stable, edition 2021+) | |
+| Language | Rust (stable, edition 2024) | Minimum 1.95 (required by `eframe` 0.36), set as `rust-version` in `Cargo.toml` |
 | Windowing / UI | `eframe` + `egui` | Immediate-mode; same stack as other Jasmine apps |
 | Terminal core | `alacritty_terminal` | Grid, VT parsing, scrollback, selection, alt screen, PTY (`tty` module), I/O `EventLoop` |
-| Reference implementation | `egui_term` | Study or fork its rendering/input approach; keep versions compatible |
+| Reference implementation | `egui_term` | Study or fork its rendering/input approach. It may target an older `egui`, so adapt borrowed code to our version |
 | PTY fallback | `portable-pty` | Only if `alacritty_terminal::tty` proves insufficient |
 | Config | `serde` + `toml` | |
 | Paths | `directories` | XDG on Linux, standard dirs on macOS |
@@ -266,7 +266,7 @@ Rule: **repaint only when needed** (PTY wakeup events, input, cursor blink). Nev
 
 ### Step 1 — Project scaffold
 - `cargo new jterm`, set up the module layout from §3.3 (empty modules are fine).
-- Add dependencies: `eframe`, `egui`, `alacritty_terminal`, `serde`, `toml`, `directories`, `anyhow`, `thiserror`, `tracing`, `tracing-subscriber`. Check versions against `egui_term`'s `Cargo.toml` for compatibility.
+- Add dependencies: `eframe`, `egui`, `alacritty_terminal`, `serde`, `toml`, `directories`, `anyhow`, `thiserror`, `tracing`, `tracing-subscriber`. Use the latest versions from crates.io.
 - `main.rs` initializes logging (to stderr in debug builds) and opens an empty eframe window titled "jterm", 1000×650.
 - Add `rustfmt.toml` (defaults are fine) and a CI-ready `Makefile` or `justfile` with `fmt`, `lint`, `test`, `run`.
 

@@ -2,6 +2,7 @@
 name = "jasmine-terminal"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
 
 # The package keeps its repo name; the installed binary uses the short name from SPEC.md.
 [[bin]]
@@ -12,8 +13,8 @@ path = "src/main.rs"
 alacritty_terminal = "0.26"
 anyhow = "1.0.104"
 directories = "6.0.0"
-eframe = "0.35"
-egui = "0.35"
+eframe = "0.36"
+egui = "0.36"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
 toml = "1.1.8"
