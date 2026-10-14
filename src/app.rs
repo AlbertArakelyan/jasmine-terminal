@@ -48,6 +48,9 @@ pub struct JtermApp {
     blink_epoch: Instant,
     /// When the visual bell started, while its flash is fading.
     bell_at: Option<Instant>,
+    /// Focus state last reported to the program (`None` while it hasn't enabled focus
+    /// reporting), so each change is sent once.
+    reported_focus: Option<bool>,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -78,6 +81,7 @@ impl JtermApp {
             pointer: PointerState::default(),
             blink_epoch: Instant::now(),
             bell_at: None,
+            reported_focus: None,
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -284,6 +288,30 @@ impl JtermApp {
         }
     }
 
+    /// Focus reporting (DECSET 1004): programs that enable it get `ESC [ I` / `ESC [ O` when
+    /// the window gains or loses focus, and the current state as soon as they enable it.
+    /// Vim and tmux use it to refresh on focus, and Windows' ConPTY enables it to track
+    /// whether the terminal is focused.
+    fn sync_focus_reports(&mut self, focused: bool) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let state = session
+            .mode()
+            .contains(TermMode::FOCUS_IN_OUT)
+            .then_some(focused);
+        if state != self.reported_focus {
+            if let Some(focused) = state {
+                session.write(if focused {
+                    &b"\x1b[I"[..]
+                } else {
+                    &b"\x1b[O"[..]
+                });
+            }
+            self.reported_focus = state;
+        }
+    }
+
     /// The visual bell: a translucent flash over the terminal that fades out over
     /// `BELL_DURATION`. Repaints are requested only while it's fading.
     fn paint_bell(
@@ -387,6 +415,7 @@ impl eframe::App for JtermApp {
         let metrics = self.cell_metrics(&ctx);
         // Read before snapshotting: never lock `Term` inside an egui context closure.
         let focused = ctx.input(|i| i.focused);
+        self.sync_focus_reports(focused);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(self.config.theme.background.into()))
             .show(ui, |ui| {

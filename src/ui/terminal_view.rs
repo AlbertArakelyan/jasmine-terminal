@@ -345,21 +345,19 @@ impl TerminalView {
                 // the run put it, so it doesn't shift as the cursor moves over it.
                 let cell = snap.row(cursor.row)[cursor.col];
                 if cell.c != ' ' && !cell.hidden {
+                    let text = cursor_text_color(cursor.color, cell.bg, cell.fg);
                     let face = Face::of(cell.style);
                     if !cell.wide && self.fits(painter.ctx(), layout, cell.c, face) {
                         let run = Run {
                             col: cursor.col,
                             text: cell.c.to_string(),
-                            fg: cell.bg,
+                            fg: text,
                             style: cell.style,
                             blank: false,
                         };
                         self.paint_run(painter, layout, cursor.row, run);
                     } else {
-                        let inverted = RenderCell {
-                            fg: cell.bg,
-                            ..cell
-                        };
+                        let inverted = RenderCell { fg: text, ..cell };
                         self.paint_lone_glyph(
                             painter, layout, cursor.row, cursor.col, cells, &inverted,
                         );
@@ -392,6 +390,17 @@ impl TerminalView {
             CursorShape::Hidden => {}
         }
     }
+}
+
+/// Color for the character under a block cursor. Normally the cell's background, like
+/// other terminals, but in reverse-video text (readline's search highlight, selections in
+/// TUIs) the background is light like the cursor, and the character would vanish. Pick
+/// whichever of the cell's colors stands out more against the cursor.
+fn cursor_text_color(cursor: Color32, bg: Color32, fg: Color32) -> Color32 {
+    let luma =
+        |c: Color32| 0.299 * f32::from(c.r()) + 0.587 * f32::from(c.g()) + 0.114 * f32::from(c.b());
+    let contrast = |c: Color32| (luma(c) - luma(cursor)).abs();
+    if contrast(fg) > contrast(bg) { fg } else { bg }
 }
 
 /// Half a cursor blink cycle: the Windows default caret blink rate.
@@ -512,6 +521,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn block_cursor_text_stays_readable() {
+        let cursor = Color32::from_rgb(0xe6, 0xe8, 0xef);
+        let (dark, light) = (
+            Color32::from_rgb(0x16, 0x18, 0x1d),
+            Color32::from_rgb(0xd4, 0xd7, 0xe0),
+        );
+        // Normal text: the dark background is drawn on the light cursor.
+        assert_eq!(cursor_text_color(cursor, dark, light), dark);
+        // Reverse video (light background): use the dark foreground instead.
+        assert_eq!(cursor_text_color(cursor, light, dark), dark);
     }
 
     #[test]

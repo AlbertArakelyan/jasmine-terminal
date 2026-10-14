@@ -252,11 +252,19 @@ fn viewport_to_grid<T>(term: &Term<T>, col: usize, row: usize) -> Point {
 /// PTY options from config plus the environment SPEC §4.1 requires. The variables go
 /// through the PTY options rather than `std::env::set_var` on our own process.
 fn pty_options(shell: &ShellConfig) -> tty::Options {
-    let env = HashMap::from([
+    let mut env = HashMap::from([
         ("TERM".to_owned(), "xterm-256color".to_owned()),
         ("COLORTERM".to_owned(), "truecolor".to_owned()),
         ("TERM_PROGRAM".to_owned(), "jterm".to_owned()),
     ]);
+    // WSL passes only the Windows variables named in WSLENV into Linux, so without this,
+    // programs in `wsl` see no COLORTERM and fall back from truecolor to 256 colors.
+    if cfg!(windows) {
+        env.insert(
+            "WSLENV".to_owned(),
+            wslenv_with(std::env::var("WSLENV").ok().as_deref()),
+        );
+    }
     tty::Options {
         shell: resolve_shell(shell, find_on_path).map(|(p, a)| tty::Shell::new(p, a)),
         working_directory: home_dir(),
@@ -266,6 +274,22 @@ fn pty_options(shell: &ShellConfig) -> tty::Options {
         #[cfg(windows)]
         escape_args: true,
     }
+}
+
+/// Adds COLORTERM and TERM_PROGRAM to an existing WSLENV list (colon-separated names, each
+/// optionally with `/flags`), keeping whatever the user already forwards.
+fn wslenv_with(existing: Option<&str>) -> String {
+    let mut names: Vec<&str> = existing
+        .unwrap_or_default()
+        .split(':')
+        .filter(|n| !n.is_empty())
+        .collect();
+    for ours in ["COLORTERM", "TERM_PROGRAM"] {
+        if !names.iter().any(|n| n.split('/').next() == Some(ours)) {
+            names.push(ours);
+        }
+    }
+    names.join(":")
 }
 
 /// Picks the program to run. `None` lets `alacritty_terminal` choose, which on Unix
@@ -355,6 +379,22 @@ mod tests {
     #[test]
     fn unix_defers_to_alacritty() {
         assert_eq!(resolve_shell(&shell(None, &[]), |_| true), None);
+    }
+
+    #[test]
+    fn wslenv_keeps_existing_names() {
+        let cases = [
+            (None, "COLORTERM:TERM_PROGRAM"),
+            (Some(""), "COLORTERM:TERM_PROGRAM"),
+            (
+                Some("GOPATH/l:USERPROFILE/p"),
+                "GOPATH/l:USERPROFILE/p:COLORTERM:TERM_PROGRAM",
+            ),
+            (Some("COLORTERM/u"), "COLORTERM/u:TERM_PROGRAM"),
+        ];
+        for (existing, expected) in cases {
+            assert_eq!(wslenv_with(existing), expected, "{existing:?}");
+        }
     }
 
     #[test]
