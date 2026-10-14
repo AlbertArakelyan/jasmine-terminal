@@ -38,7 +38,13 @@ pub enum ConfigError {
     Write { path: PathBuf, source: io::Error },
     #[error("invalid config: {0}")]
     Parse(#[from] toml::de::Error),
+    #[error("invalid config: {0}")]
+    Invalid(String),
 }
+
+/// Font sizes outside this range are almost certainly typos, and extreme values can
+/// produce absurd grids or exhaust egui's font atlas.
+const FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 4.0..=200.0;
 
 /// All user settings. Every section and key is optional in the file; anything missing
 /// takes its default, so a config only needs to contain what the user changed.
@@ -204,8 +210,30 @@ impl Config {
     fn parse_reporting_unknown(text: &str) -> Result<(Self, Vec<String>), ConfigError> {
         let mut unknown = Vec::new();
         let deserializer = toml::Deserializer::parse(text)?;
-        let config = serde_ignored::deserialize(deserializer, |key| unknown.push(key.to_string()))?;
+        let config: Self =
+            serde_ignored::deserialize(deserializer, |key| unknown.push(key.to_string()))?;
+        config.validate()?;
         Ok((config, unknown))
+    }
+
+    /// Rejects values that parse but would break the terminal, e.g. a NaN font size
+    /// (TOML allows `nan`) or a negative padding that makes the grid wider than the window.
+    fn validate(&self) -> Result<(), ConfigError> {
+        let size = self.font.size;
+        if !FONT_SIZE_RANGE.contains(&size) {
+            return Err(ConfigError::Invalid(format!(
+                "font.size = {size} must be between {} and {}",
+                FONT_SIZE_RANGE.start(),
+                FONT_SIZE_RANGE.end()
+            )));
+        }
+        let padding = self.window.padding;
+        if !(padding.is_finite() && padding >= 0.0) {
+            return Err(ConfigError::Invalid(format!(
+                "window.padding = {padding} must be zero or more"
+            )));
+        }
+        Ok(())
     }
 
     /// Writes this config as a commented TOML file, creating parent directories as needed.
@@ -328,6 +356,13 @@ mod tests {
             "[font]\nsize = \"big\"",
             "[cursor]\nstyle = \"triangle\"",
             "[theme]\nforeground = \"red\"",
+            "[font]\nsize = 0.0",
+            "[font]\nsize = -12.0",
+            "[font]\nsize = nan",
+            "[font]\nsize = inf",
+            "[font]\nsize = 500.0",
+            "[window]\npadding = -20.0",
+            "[window]\npadding = nan",
         ] {
             assert!(
                 Config::parse(text).is_err(),

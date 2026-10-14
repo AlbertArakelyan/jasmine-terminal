@@ -12,6 +12,10 @@ use egui::{FontId, Rect};
 pub struct CellMetrics {
     pub width: f32,
     pub height: f32,
+    /// The font's real glyph advance in points, before snapping. egui lays out text with
+    /// this spacing, so painting a run of cells as one galley needs `width - advance` of
+    /// extra letter spacing to keep each glyph in its own cell.
+    pub advance: f32,
 }
 
 /// Terminal grid size in cells.
@@ -37,6 +41,7 @@ impl CellMetrics {
         Self {
             width: snap(advance),
             height: snap(row_height),
+            advance,
         }
     }
 
@@ -89,13 +94,9 @@ mod tests {
         // JetBrains Mono: advance 600/1000 em, line height 1.32 em. At 14pt that's
         // 8.4pt x ~18.5pt; egui's default monospace font would give a shorter row.
         let config = crate::config::FontConfig::default();
-        assert_eq!(
-            measure_headless(&config, 1.0),
-            CellMetrics {
-                width: 8.0,
-                height: 18.0
-            }
-        );
+        let m = measure_headless(&config, 1.0);
+        assert_eq!((m.width, m.height), (8.0, 18.0));
+        assert!((m.advance - 8.4).abs() < 1e-4, "advance {}", m.advance);
         let m = measure_headless(&config, 2.0);
         assert_eq!((m.width * 2.0, m.height * 2.0), (17.0, 37.0));
     }
@@ -103,13 +104,8 @@ mod tests {
     #[test]
     fn snaps_to_physical_pixels() {
         // 8.4pt at 1x rounds to 8px; at 1.5x, 12.6px rounds to 13px = 8.666..pt.
-        assert_eq!(
-            CellMetrics::from_font(8.4, 17.0, 1.0),
-            CellMetrics {
-                width: 8.0,
-                height: 17.0
-            }
-        );
+        let m = CellMetrics::from_font(8.4, 17.0, 1.0);
+        assert_eq!((m.width, m.height, m.advance), (8.0, 17.0, 8.4));
         let m = CellMetrics::from_font(8.4, 17.0, 1.5);
         assert_eq!(m.width * 1.5, 13.0);
         assert_eq!(m.height * 1.5, 26.0);
@@ -123,10 +119,7 @@ mod tests {
 
     #[test]
     fn rect_to_grid_size() {
-        let m = CellMetrics {
-            width: 8.0,
-            height: 16.0,
-        };
+        let m = CellMetrics::from_font(8.0, 16.0, 1.0);
         // (rect w, rect h, padding) -> (cols, rows)
         let cases = [
             ((800.0, 480.0, 0.0), (100, 30)),
@@ -148,20 +141,15 @@ mod tests {
 
     #[test]
     fn grid_size_tolerates_float_error() {
-        let m = CellMetrics {
-            width: 8.4,
-            height: 16.8,
-        };
+        // At 5x, 8.4pt and 16.8pt are whole pixels, so they stay fractional in points.
+        let m = CellMetrics::from_font(8.4, 16.8, 5.0);
         assert_eq!(m.grid_size(rect(840.0, 504.0), 0.0).cols, 100);
         assert_eq!(m.grid_size(rect(840.0, 504.0), 0.0).rows, 30);
     }
 
     #[test]
     fn huge_rect_is_clamped() {
-        let m = CellMetrics {
-            width: 1.0,
-            height: 1.0,
-        };
+        let m = CellMetrics::from_font(1.0, 1.0, 1.0);
         let g = m.grid_size(rect(1.0e6, 1.0e6), 0.0);
         assert_eq!((g.cols, g.rows), (u16::MAX, u16::MAX));
     }

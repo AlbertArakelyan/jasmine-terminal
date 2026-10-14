@@ -11,10 +11,10 @@ use crate::ui::fonts;
 /// Root application state.
 pub struct JtermApp {
     config: Config,
-    /// Cell size and the `pixels_per_point` it was measured at. Measured lazily because
-    /// egui has no fonts until the first frame, and re-measured when the scale changes
-    /// (e.g. the window moves to a monitor with different DPI).
-    metrics: Option<(f32, CellMetrics)>,
+    /// Cell size and the `(pixels_per_point, font size)` it was measured at. Measured
+    /// lazily because egui has no fonts until the first frame, and re-measured when either
+    /// changes (e.g. the window moves to a monitor with different DPI).
+    metrics: Option<((f32, f32), CellMetrics)>,
     grid: Option<GridSize>,
 }
 
@@ -30,8 +30,9 @@ impl JtermApp {
 
     fn cell_metrics(&mut self, ctx: &egui::Context) -> CellMetrics {
         let ppp = ctx.pixels_per_point();
+        let key = (ppp, self.config.font.size);
         match self.metrics {
-            Some((measured_at, m)) if measured_at == ppp => m,
+            Some((measured_at, m)) if measured_at == key => m,
             _ => {
                 let font = FontId::monospace(self.config.font.size);
                 let m = CellMetrics::measure(ctx, &font);
@@ -42,7 +43,7 @@ impl JtermApp {
                     cell_height = m.height,
                     "measured cell metrics"
                 );
-                self.metrics = Some((ppp, m));
+                self.metrics = Some((key, m));
                 m
             }
         }
