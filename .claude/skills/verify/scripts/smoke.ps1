@@ -8,6 +8,8 @@
 #   -Keys "Start-Sleep 100{ENTER}||^c" -KeyDelayMs 1500
 # -StartDelayMs waits before the first group, e.g. for a slow shell profile to load.
 # A group of the form "<resize 1300x800>" resizes the window (outer size, in pixels) instead of typing.
+# "<wheel 5>" / "<wheel -5>" scrolls 5 notches up / down over the window centre ("<wheel +5 shift>" with Shift),
+# posted as WM_MOUSEWHEEL so the user's real mouse cursor isn't moved.
 # Exit code 1 if the process exited early or no window appeared.
 param(
     [int]$Seconds = 4,
@@ -30,6 +32,7 @@ Add-Type -Namespace Smoke -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(System.IntPtr h);
 [DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr after, int x, int y, int w, int ht, uint flags);
+[DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint msg, System.IntPtr w, System.IntPtr l);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 // Windows only lets the foreground thread change the foreground window. Attaching to its
 // input queue for the call is the standard way for a test driver to bring a window forward.
@@ -76,6 +79,27 @@ try {
                     [void][Smoke.Win]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, [int]$Matches[1], [int]$Matches[2], 0x16)
                     $r = New-Object Smoke.Win+RECT; [void][Smoke.Win]::GetClientRect($h, [ref]$r)
                     Write-Output "resized: client=$($r.R)x$($r.B)"
+                    continue
+                }
+                if ($groups[$i] -match '^<wheel ([+-]?\d+)( shift)?>$') {
+                    $notches = [int]$Matches[1]
+                    $keys = if ($Matches[2]) { 0x4 } else { 0 }   # MK_SHIFT
+                    $w = New-Object Smoke.Win+RECT; [void][Smoke.Win]::GetWindowRect($h, [ref]$w)
+                    $x = [int](($w.L + $w.R) / 2); $y = [int](($w.T + $w.B) / 2)
+                    $lparam = [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF))
+                    # A real wheel happens with the pointer over the window, so egui knows where
+                    # it is (mouse reports need the cell). WM_MOUSEMOVE takes client coordinates.
+                    $c = New-Object Smoke.Win+RECT; [void][Smoke.Win]::GetClientRect($h, [ref]$c)
+                    $move = [IntPtr]((([int]($c.B / 2)) -shl 16) -bor ([int]($c.R / 2)))
+                    [void][Smoke.Win]::PostMessage($h, 0x0200, [IntPtr]::Zero, $move)   # WM_MOUSEMOVE
+                    Start-Sleep -Milliseconds 50
+                    $step = if ($notches -gt 0) { 120 } else { -120 }   # WHEEL_DELTA per notch
+                    for ($n = 0; $n -lt [Math]::Abs($notches); $n++) {
+                        $wparam = [IntPtr]((($step -band 0xFFFF) -shl 16) -bor $keys)
+                        [void][Smoke.Win]::PostMessage($h, 0x020A, $wparam, $lparam)   # WM_MOUSEWHEEL
+                        Start-Sleep -Milliseconds 30
+                    }
+                    Write-Output "wheel: $notches notches$($Matches[2])"
                     continue
                 }
                 # SendKeys types into whatever window is in front. Never type unless that's

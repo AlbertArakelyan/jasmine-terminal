@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-MVP Steps 1–7 are done: config, the bundled font, cell metrics, the shell in a PTY, grid rendering, keyboard input and resize. `cargo run` opens a 1000×650 window running the shell (PowerShell 7 on this machine) that you can type into. Commands, Ctrl combinations, history, Tab completion and vim all work, and the grid and the shell follow window resizes. There's no scrollback UI, selection or copy yet (Steps 8–9). The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
+MVP Steps 1–8 are done: config, the bundled font, cell metrics, the shell in a PTY, grid rendering, keyboard input, resize, and scrollback with the mouse wheel. `cargo run` opens a 1000×650 window running the shell (PowerShell 7 on this machine) that you can type into. Commands, Ctrl combinations, history, Tab completion and vim work, the grid follows window resizes, and the wheel and Shift+PgUp/PgDn scroll history. There's no selection or copy/paste of a selection yet (Step 9). The window closes when the shell exits. Modules for later steps are still empty stubs. **`SPEC.md` is the source of truth**: it defines the product (Jasmine Terminal, binary `jterm`, a Warp-style terminal built on Rust + egui + `alacritty_terminal`), the target architecture, and an ordered MVP plan (§5, Steps 1–12) with acceptance criteria per step. Read the relevant SPEC section before starting any work.
 
 Notes:
 - The package is named `jasmine-terminal`, but a `[[bin]]` entry builds it as `jterm` (`target/debug/jterm.exe`).
@@ -87,6 +87,25 @@ A `justfile` wraps these: `just` (lint + test), `just fmt`, `just lint` (fmt che
   - `TextAreaSizeRequest` (CSI 14/18 t) is answered from `session.size()`.
   - `resize_reaches_the_shell` checks that the shell itself sees the new size (`mode con` / `stty size`).
   - **Known external issue:** Git Bash (MSYS2) under ConPTY drops the first key typed after a resize. PowerShell doesn't; jterm does send the key (seen in trace logs).
+- **Scrollback and wheel** (`ui/mouse.rs`, `JtermApp::handle_input`):
+  - `WheelAccumulator` turns wheel deltas into whole lines: 3 per notch, trackpad pixels divided by the cell height with the remainder carried, pages as the row count. Positive means up into history.
+  - `wheel_action` picks what the wheel does:
+    - With mouse reporting on and no Shift: wheel button reports (64/65) at the pointer cell.
+    - On the alternate screen with ALTERNATE_SCROLL and no Shift: arrow keys, DECCKM-aware (less, man).
+    - Otherwise: `Scroll::Delta` on the scrollback.
+  - `mouse_report` encodes SGR, UTF-8 and legacy xterm reports, ready for Step 9's click reporting.
+  - Shift+PgUp/PgDn page the scrollback (not on the alternate screen, where the program gets them). They're handled before `KeyboardState::feed`, so they don't jump to the bottom.
+  - Output arriving while scrolled up doesn't move the view, because alacritty grows `display_offset` with it (`scrolled_view_stays_put_while_output_arrives`). Typing jumps back to the bottom.
+  - While scrolled up, a "↑ N" badge sits in the top-right corner (`paint_scroll_badge`).
+  - `Layout::cell_at(pos)` maps a pointer position to a cell, clamped to the grid.
+  - `WheelAccumulator` drops its leftover fraction when the direction reverses, and ignores non-finite deltas.
+  - Output to programs is capped at one page per event.
+  - Reports add Shift +4, Alt +8 and Ctrl +16 to the button code.
+  - Legacy and UTF-8 reports past their coordinate limit (223 / 2015) are dropped rather than clamped, and so is a report with no pointer position.
+  - The badge uses inverted theme colors (`snap.foreground` / `snap.background`).
+  - `InputModes::from(TermMode)` avoids a second lock.
+- **Testing the wheel:** `smoke.ps1` takes `<wheel N>` / `<wheel -N>` / `<wheel N shift>` groups. It posts `WM_MOUSEMOVE` (so egui knows the pointer cell) and then `WM_MOUSEWHEEL` to the window, so the user's real mouse isn't moved. Git's `less` is at `C:\Program Files\Git\usr\bin\less.exe` (not on the PowerShell PATH), and nvim enables mouse reporting by default.
+  - **Known flakiness:** with nvim on Windows, identical correct SGR wheel reports (seen in trace logs) sometimes scroll and sometimes don't, run to run. It's not jterm (ConPTY/nvim input timing), so confirm wheel-in-nvim with a real mouse. History scrolling and `less` were reliable.
 - **Windows Ctrl+C:** children inherit the parent's "ignore Ctrl+C" flag. When jterm was started from Git Bash or cargo, ^C (0x03) reached ConPTY but interrupted nothing. `enable_ctrl_c_for_children()` calls `SetConsoleCtrlHandler(NULL, FALSE)` before spawning. `ctrl_c_interrupts_a_running_program` covers it.
 - **Typing into the app from tests:** `smoke.ps1 -Keys "group1||group2" -KeyDelayMs N -StartDelayMs N` uses SendKeys syntax. It first makes jterm the foreground window (via `AttachThreadInput`) and refuses to type otherwise, because SendKeys goes to whatever window is in front and stray keys landed in the user's windows before this check existed. The user's PowerShell profile takes about 1–1.6 s to load, so use `-StartDelayMs 3000`. Test commands end up in the user's PSReadLine history.
 - **Known rendering gaps (Step 5 review, deferred):**

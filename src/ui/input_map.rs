@@ -7,6 +7,7 @@
 //! bytes for those three come from the Copy/Cut/Paste events, the other Ctrl combinations
 //! from `Event::Key`, and printable text only from `Event::Text` / IME commits.
 
+use alacritty_terminal::term::TermMode;
 use egui::{Event, ImeEvent, Key, Modifiers};
 
 /// Terminal modes that change what keys send, read from `TermMode` each frame.
@@ -16,6 +17,15 @@ pub struct InputModes {
     pub app_cursor: bool,
     /// Pasted text is wrapped in `ESC [200~` ... `ESC [201~` so shells don't run it.
     pub bracketed_paste: bool,
+}
+
+impl From<TermMode> for InputModes {
+    fn from(mode: TermMode) -> Self {
+        Self {
+            app_cursor: mode.contains(TermMode::APP_CURSOR),
+            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+        }
+    }
 }
 
 /// What an input event asks for.

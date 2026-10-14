@@ -59,10 +59,11 @@ pub struct RenderSnapshot {
     pub cursor: Option<RenderCursor>,
     /// Lines scrolled back into history. Visible row `r` is grid line `r - display_offset`;
     /// selection and mouse handling (Steps 8–9) need this mapping.
-    #[expect(dead_code, reason = "used by scrollback and selection from Step 8")]
     pub display_offset: usize,
     /// Default background, painted behind the whole grid and padding.
     pub background: Color32,
+    /// Default foreground, for UI drawn over the grid in theme colors.
+    pub foreground: Color32,
 }
 
 impl RenderSnapshot {
@@ -107,6 +108,7 @@ impl RenderSnapshot {
 
             display_offset: content.display_offset,
             background: palette.background(),
+            foreground: palette.get(NamedColor::Foreground as usize),
         }
     }
 
@@ -382,5 +384,40 @@ mod tests {
         );
         let beam = snap(b"\x1b[6 q").cursor.expect("cursor visible");
         assert_eq!(beam.shape, CursorShape::Beam);
+    }
+    fn screen_text(s: &RenderSnapshot) -> Vec<String> {
+        (0..s.rows)
+            .map(|r| {
+                s.row(r)
+                    .iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scrolled_view_stays_put_while_output_arrives() {
+        use alacritty_terminal::grid::Scroll;
+
+        let theme = Theme::default();
+        let lines: String = (1..=100).map(|i| format!("line {i}\r\n")).collect();
+        let mut term = term_with(lines.as_bytes());
+        term.scroll_display(Scroll::Delta(10));
+        let before = screen_text(&RenderSnapshot::capture(&term, &theme));
+        // The bottom view is "line 98".."line 100" plus the empty last row.
+        assert_eq!(before[0], "line 88", "scrolled 10 lines up from the bottom");
+
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"more 1\r\nmore 2\r\nmore 3\r\n");
+        let after = RenderSnapshot::capture(&term, &theme);
+        assert_eq!(screen_text(&after), before, "the view must not move");
+        assert_eq!(after.display_offset, 13);
+        assert!(
+            after.cursor.is_none(),
+            "the cursor is below the visible area"
+        );
     }
 }

@@ -21,7 +21,6 @@ use super::event_proxy::EventProxy;
 use super::snapshot::{Palette, RenderSnapshot};
 use crate::config::theme::Theme;
 use crate::config::{Config, ShellConfig};
-use crate::ui::input_map::InputModes;
 
 /// Grid size handed to `alacritty_terminal`, which takes it through the `Dimensions` trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,12 +145,16 @@ impl TerminalSession {
         self.size = size;
     }
 
-    pub fn input_modes(&self) -> InputModes {
-        let mode = *self.term.lock().mode();
-        InputModes {
-            app_cursor: mode.contains(TermMode::APP_CURSOR),
-            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
-        }
+    /// The terminal's current modes (mouse reporting, alternate screen, ...).
+    pub fn mode(&self) -> TermMode {
+        *self.term.lock().mode()
+    }
+
+    /// Moves the view through the scrollback. Output arriving while scrolled up keeps the
+    /// view where it is (alacritty shifts `display_offset` with it); typing returns to the
+    /// bottom (`send_input`).
+    pub fn scroll(&self, scroll: Scroll) {
+        self.term.lock().scroll_display(scroll);
     }
 
     /// Sends user input to the shell. Like other terminals, typing jumps back to the

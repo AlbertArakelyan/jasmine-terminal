@@ -91,6 +91,19 @@ impl Layout {
         }
     }
 
+    /// The (column, row) under `pos`, clamped to the grid so positions in the padding map
+    /// to the nearest edge cell.
+    pub fn cell_at(&self, pos: Pos2, cols: usize, rows: usize) -> (usize, usize) {
+        let rel = pos - self.origin;
+        let clamp = |v: f32, size: f32, n: usize| {
+            ((v / size).floor().max(0.0) as usize).min(n.saturating_sub(1))
+        };
+        (
+            clamp(rel.x, self.cell.width, cols),
+            clamp(rel.y, self.cell.height, rows),
+        )
+    }
+
     pub fn cell_rect(&self, row: usize, col: usize, cells: usize) -> Rect {
         Rect::from_min_size(
             self.origin + vec2(col as f32 * self.cell.width, row as f32 * self.cell.height),
@@ -127,6 +140,7 @@ impl TerminalView {
             self.paint_text(painter, &layout, row, snap.row(row));
         }
         self.paint_cursor(painter, &layout, snap);
+        paint_scroll_badge(painter, rect, &layout, snap);
     }
 
     fn measure_faces(&mut self, ctx: &egui::Context, layout: &Layout) {
@@ -355,6 +369,28 @@ impl TerminalView {
             CursorShape::Hidden => {}
         }
     }
+}
+
+/// While viewing history, a small "↑ N" badge in the top-right corner shows how far up the
+/// view is, so it's obvious why new output isn't appearing. Typing returns to the bottom.
+fn paint_scroll_badge(painter: &Painter, rect: Rect, layout: &Layout, snap: &RenderSnapshot) {
+    if snap.display_offset == 0 {
+        return;
+    }
+    let font = FontId::monospace(layout.font_size * 0.85);
+    // Inverted theme colors, so the badge stands out on light and dark themes alike.
+    let (fg, fill) = (snap.background, snap.foreground);
+    let galley = painter.layout_no_wrap(format!("↑ {}", snap.display_offset), font, fg);
+    let margin = 6.0;
+    let badge = Rect::from_min_size(
+        pos2(
+            rect.max.x - galley.size().x - 3.0 * margin,
+            rect.min.y + margin,
+        ),
+        galley.size() + vec2(2.0 * margin, margin),
+    );
+    painter.rect_filled(badge, 4.0, fill.gamma_multiply(0.9));
+    painter.galley(badge.min + vec2(margin, margin / 2.0), galley, fg);
 }
 
 fn text_format(layout: &Layout, face: Face, fg: Color32, spacing: f32) -> TextFormat {

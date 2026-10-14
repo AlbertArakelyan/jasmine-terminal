@@ -4,6 +4,8 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
+use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Rgb;
 use egui::FontId;
 use tracing::{debug, error, info};
@@ -12,7 +14,8 @@ use crate::config::Config;
 use crate::terminal::session::{TermSize, TerminalSession};
 use crate::ui::cell_metrics::{CellMetrics, GridSize};
 use crate::ui::fonts;
-use crate::ui::input_map::{Input, KeyboardState};
+use crate::ui::input_map::{Input, InputModes, KeyboardState};
+use crate::ui::mouse::{self, WheelAccumulator, WheelAction};
 use crate::ui::terminal_view::{Layout, TerminalView};
 
 /// Debug builds only: write `exit\r` to the shell this many milliseconds after it starts.
@@ -32,6 +35,7 @@ pub struct JtermApp {
     spawn_error: Option<String>,
     view: TerminalView,
     keyboard: KeyboardState,
+    wheel: WheelAccumulator,
     wakeups: u64,
     debug_exit: Option<DebugExit>,
     /// The close command is already sent; the window can take another frame to go away.
@@ -58,6 +62,7 @@ impl JtermApp {
             spawn_error: None,
             view: TerminalView::default(),
             keyboard: KeyboardState::default(),
+            wheel: WheelAccumulator::default(),
             wakeups: 0,
             debug_exit: debug_exit_from_env(),
             closing: false,
@@ -132,9 +137,9 @@ impl JtermApp {
         }
     }
 
-    /// Forwards keyboard input to the shell. The terminal widget keeps keyboard focus and
+    /// Forwards keyboard and wheel input. The terminal widget keeps keyboard focus and
     /// locks Tab, Escape and the arrows to itself, so egui doesn't use them to move focus.
-    fn handle_keyboard(&mut self, ctx: &egui::Context, response: &egui::Response) {
+    fn handle_input(&mut self, ctx: &egui::Context, response: &egui::Response, layout: &Layout) {
         if !response.has_focus() {
             response.request_focus();
         }
@@ -153,14 +158,62 @@ impl JtermApp {
             return;
         };
         // Copy the events out first: `Term` must never be locked inside an egui closure.
-        let events = ctx.input(|i| i.events.clone());
+        let (events, pointer) = ctx.input(|i| (i.events.clone(), i.pointer.latest_pos()));
         if events.is_empty() {
             return;
         }
-        let modes = session.input_modes();
+        let mode = session.mode();
+        let modes = InputModes::from(mode);
+        let size = session.size();
+        let (cols, rows) = (usize::from(size.cols), usize::from(size.rows));
         for event in &events {
             // Keystrokes are only ever logged at trace level (SPEC §4.16).
             tracing::trace!(?event, "input event");
+            match event {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } => {
+                    // macOS turns Shift+wheel into horizontal scrolling; treat it as vertical.
+                    let dy = if delta.y == 0.0 && modifiers.shift {
+                        delta.x
+                    } else {
+                        delta.y
+                    };
+                    let lines = self.wheel.lines(*unit, dy, layout.cell.height, rows);
+                    let cell = pointer.map(|p| layout.cell_at(p, cols, rows));
+                    let action = mouse::wheel_action(lines, mode, *modifiers, cell, rows);
+                    tracing::trace!(lines, ?cell, ?mode, ?action, "wheel");
+                    match action {
+                        Some(WheelAction::Scroll(n)) => session.scroll(Scroll::Delta(n)),
+                        Some(WheelAction::Write(bytes)) => session.write(bytes),
+                        None => {}
+                    }
+                    continue;
+                }
+                // Shift+PgUp/PgDn page through the scrollback. Full-screen programs (less,
+                // vim) get the keys instead, as they have no scrollback to page through.
+                egui::Event::Key {
+                    key: key @ (egui::Key::PageUp | egui::Key::PageDown),
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.shift
+                    && !modifiers.ctrl
+                    && !modifiers.alt
+                    && !mode.contains(TermMode::ALT_SCREEN) =>
+                {
+                    session.scroll(if *key == egui::Key::PageUp {
+                        Scroll::PageUp
+                    } else {
+                        Scroll::PageDown
+                    });
+                    continue;
+                }
+                _ => {}
+            }
             match self.keyboard.feed(event, modes) {
                 Some(Input::Write(bytes)) => session.send_input(bytes),
                 Some(Input::Copy) => debug!("copy shortcut: selection arrives in Step 9"),
@@ -251,13 +304,13 @@ impl eframe::App for JtermApp {
                 let grid = metrics.grid_size(rect, padding);
                 self.update_grid(grid);
                 self.sync_session(&ctx, grid, metrics);
-                self.handle_keyboard(&ctx, &response);
+                let layout =
+                    Layout::new(&ctx, rect, padding, metrics, self.config.font.size, focused);
+                self.handle_input(&ctx, &response, &layout);
 
                 let painter = ui.painter_at(rect);
                 if let Some(session) = &self.session {
                     let snapshot = session.snapshot(&self.config.theme);
-                    let layout =
-                        Layout::new(&ctx, rect, padding, metrics, self.config.font.size, focused);
                     self.view.paint(&painter, rect, layout, &snapshot);
                     // egui-winit only enables the OS IME while this is set, and places the
                     // composition window at the cursor.
